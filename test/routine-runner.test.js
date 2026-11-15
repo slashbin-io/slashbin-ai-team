@@ -4,7 +4,8 @@
  * tested against real processes; the poller's use of it against a fake board.
  */
 const assert = require("assert");
-const { mkdtempSync, writeFileSync } = require("fs");
+const { mkdtempSync, writeFileSync, readFileSync } = require("fs");
+const { EventEmitter } = require("events");
 const { join } = require("path");
 const { tmpdir } = require("os");
 const { parseRoutineRunner, createRoutineRunner, DECLINED, MAX_ANSWER_BYTES } = require("../lib/routine-runner");
@@ -98,10 +99,61 @@ const said = { id: "k1", authorAgentId: null, authorUserId: "user-avery", create
     assert.strictEqual(await createRoutineRunner({ command: [process.execPath, "-e", 'console.log("fine")'], cwd: dir, env: () => process.env, log: silent })(card), "fine");
   });
 
-  await check("an answer longer than one answer may be is cut, and says so", async () => {
+  await check("past its time the card is released at the deadline, even while something the command started holds its output open", async () => {
+    const hang = createRoutineRunner({ command: ["/bin/sh", "-c", "sleep 5 & wait"], cwd: dir, env: () => process.env, log: silent, timeoutMs: 150 });
+    const t0 = Date.now();
+    await assert.rejects(hang(card), /stopped after 150 ms/);
+    assert.ok(Date.now() - t0 < 600, `released after ${Date.now() - t0} ms`);
+    // The same when the command itself is gone and only what it started remains.
+    const orphan = createRoutineRunner({ command: ["/bin/sh", "-c", "sleep 5 & exit 0"], cwd: dir, env: () => process.env, log: silent, timeoutMs: 150 });
+    const t1 = Date.now();
+    await assert.rejects(orphan(card), /stopped after 150 ms/);
+    assert.ok(Date.now() - t1 < 600, `released after ${Date.now() - t1} ms`);
+  });
+
+  await check("what the command started is stopped with it", async () => {
+    const pidFile = join(dir, "sleeper.pid");
+    const r = createRoutineRunner({ command: ["/bin/sh", "-c", `sleep 30 & echo $! > ${pidFile}; wait`], cwd: dir, env: () => process.env, log: silent, timeoutMs: 150 });
+    await assert.rejects(r(card), /stopped after/);
+    await new Promise((res) => setTimeout(res, 100));
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    assert.throws(() => process.kill(pid, 0), /ESRCH/, `subprocess ${pid} is still running`);
+  });
+
+  /** A runner whose command is a fake process delivering exactly these chunks. */
+  function fed(chunksToSend) {
+    const spawn = () => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+      child.stdin = Object.assign(new EventEmitter(), { end() {} });
+      child.kill = () => {};
+      setImmediate(() => { for (const c of chunksToSend) child.stdout.emit("data", c); child.emit("close", 0, null); });
+      return child;
+    };
+    return createRoutineRunner({ command: ["fake"], cwd: dir, env: () => ({}), log: silent, spawn });
+  }
+
+  await check("an answer longer than one answer may be is cut to the limit, notice included, and says so", async () => {
     const answer = await runner(`process.stdout.write("x".repeat(${MAX_ANSWER_BYTES} + 5000));`)(card);
-    assert.ok(Buffer.byteLength(answer) <= MAX_ANSWER_BYTES + 200, `${Buffer.byteLength(answer)} bytes`);
+    assert.ok(Buffer.byteLength(answer) <= MAX_ANSWER_BYTES, `${Buffer.byteLength(answer)} bytes`);
     assert.match(answer, /left out/);
+  });
+
+  await check("the cut keeps everything up to the limit however the output arrives", async () => {
+    const one = await fed([Buffer.alloc(65_000, "x")])(card);
+    const two = await fed([Buffer.alloc(50_000, "x"), Buffer.alloc(15_000, "x")])(card);
+    assert.strictEqual(one, two);
+    assert.match(one, /^x{50000,}\n\[The rest/);
+    assert.ok(Buffer.byteLength(one) <= MAX_ANSWER_BYTES && Buffer.byteLength(one) > MAX_ANSWER_BYTES - 4, `${Buffer.byteLength(one)} bytes`);
+    assert.strictEqual(await fed([Buffer.alloc(MAX_ANSWER_BYTES, "x")])(card), "x".repeat(MAX_ANSWER_BYTES), "exactly the limit is not cut");
+  });
+
+  await check("a character split across two reads is one character, and a cut never ends inside one", async () => {
+    const tick = Buffer.from("✓");
+    assert.strictEqual(await fed([Buffer.from("done "), tick.subarray(0, 1), tick.subarray(1)])(card), "done ✓");
+    const cutAnswer = await fed([Buffer.from("✓".repeat(25_000))])(card);
+    assert.doesNotMatch(cutAnswer, /\uFFFD/);
+    assert.match(cutAnswer, /✓\n\[The rest/);
   });
 
   // The poller.

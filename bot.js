@@ -21,6 +21,7 @@ const { signalRefusal, normalizeSignal, tokenMatches: bridgeTokenMatches } = req
 const { createOwnerAsks, announceAsk, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
 const { parseRunnerRefusal, detectRefusal, DEFAULT_RULES: RUNNER_REFUSAL_DEFAULTS } = require("./lib/refusal");
 const { parseRoutineRunner, createRoutineRunner } = require("./lib/routine-runner");
+const { parseAlertConfig, isAlert, createAlertQueue } = require("./lib/alert-runner");
 const { createPaperclipPoller, paperclipBoards, boardKeyEnvs, replyCollector, parseIntake, parseRewake, parseResolveOwn, resolveOwnRouteProblem } = require("./lib/paperclip");
 const { parseContract, toolLine } = require("./lib/handoff-contract");
 const { escalateClientFor, escalateBoard } = require("./lib/process-escalate");
@@ -1655,6 +1656,9 @@ client?.once("ready", () => {
 client?.on("messageCreate", async (msg) => {
   // Skip own messages (bot responses are recorded via recordBotResponse)
   if (msg.author.id === client.user?.id) return;
+
+  // A monitoring alert goes to its command, never to the model (lib/alert-runner.js).
+  if (isAlert(msg, ALERT.config)) { ALERT_QUEUE.enqueue(msg); return; }
 
   // Record ALL messages to buffer before any response filtering
   let fileRefs = [];
@@ -3638,6 +3642,22 @@ if (PAPERCLIP_BOARDS.length && PAPERCLIP_CWD_DENIED) {
 // A command that answers a routine's card in place of a model run
 // (lib/routine-runner.js). Unset, every card gets the model.
 const ROUTINE_RUNNER = parseRoutineRunner(process.env.PAPERCLIP_ROUTINE_RUNNER);
+// A monitoring alert answered by a command in its own thread (lib/alert-runner.js).
+// Same working directory, environment and time limit as the routine runner.
+const ALERT = parseAlertConfig(process.env, parseRoutineRunner);
+if (ALERT.problem) log.error(ALERT.problem);
+if (ALERT.config) log.info({ channels: ALERT.config.channels, webhooks: ALERT.config.webhooks, runner: ALERT.config.command.join(" ") }, "Alert runner on");
+const ALERT_QUEUE = ALERT.config ? createAlertQueue({
+  split: splitMessage, log: log.child({ component: "alerts" }),
+  run: createRoutineRunner({
+    command: ALERT.config.command, cwd: CLAUDE_CWD, timeoutMs: CLAUDE_TIMEOUT_MS, log: log.child({ component: "alerts" }),
+    env: () => {
+      const built = runEnvFor("parity");
+      if (built.problems.length) throw new Error(`Run environment refused — ${built.problems.join("; ")}`);
+      return built.env;
+    },
+  }),
+}) : null;
 if (PAPERCLIP_BOARDS.length && !BOARD_TRIGGERS.problems.length) {
   log.info({ intake: BOARD_TRIGGERS.intake, rewake: BOARD_TRIGGERS.rewake || "off", routineRunner: ROUTINE_RUNNER ? ROUTINE_RUNNER.join(" ") : "off",
     intakeFrom: process.env.PAPERCLIP_INTAKE ? "PAPERCLIP_INTAKE" : "default",

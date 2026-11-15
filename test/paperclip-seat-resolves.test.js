@@ -29,6 +29,7 @@ function board({ description = "Ship the release.", by = { createdByAgentId: "ag
     status: "in_progress", assigneeAgentId: "agent-em", assigneeUserId: null, labels: [], createdAt: "2026-01-01T00:00:00Z", requestDepth: 0, ...by };
   const activity = [], comments = [], writes = [];
   const owners = { "own-1": ownerCard(1) };
+  const fixture = { wakeups: [], wakeupFails: false };
   const runs = [{ id: "r1", agentId: "agent-em", status: "running" }];
   // Why each run woke, as Paperclip records it (none: the run does not say).
   const reasons = {};
@@ -41,6 +42,12 @@ function board({ description = "Ship the release.", by = { createdByAgentId: "ag
     const path = url.replace(/^.*\/api/, "");
     if (path === "/agents/me") return ok({ id: "agent-em", name: "Engineering Manager", companyId: "co-1", ...(reportsTo ? { reportsTo } : {}) });
     // The owners' cards an ask opens (own-1 is there from the start).
+    // The seat waking itself (after it recorded an answer): accepted and noted, unless the fixture is set to refuse it.
+    if (path === "/agents/agent-em/wakeup" && init.method === "POST") {
+      if (fixture.wakeupFails) return { ok: false, status: 404, text: async () => "" };
+      fixture.wakeups.push(JSON.parse(init.body));
+      return ok({ id: "wake-1" });
+    }
     const own = path.match(/^\/issues\/(own-\d+)$/);
     if (own && owners[own[1]]) return ok(owners[own[1]]);
     if (path === "/companies/co-1/agents") return ok(SEATS);
@@ -99,7 +106,7 @@ function board({ description = "Ship the release.", by = { createdByAgentId: "ag
     // The board's checkout of a wake: a blocked card the bot holds is in progress for the run.
     if (card.status === "blocked" && card.assigneeAgentId === "agent-em") { card.status = "in_progress"; card.blockedTransitionAt = null; }
   };
-  return { card, writes, comments, fetch, wake, runs, record, owners, now };
+  return { card, writes, comments, fetch, wake, runs, record, owners, now, fixture };
 }
 /** An owner's card as an ask opens it. */
 function ownerCard(n) {
@@ -852,7 +859,17 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
     if (answer === "user") b.comments.push({ id: "u1", authorAgentId: null, authorUserId: "user-avery", createdAt: b.now(), body: "Yes, go ahead." });
     if (answer === "relayed") b.comments.push({ id: "u1", authorAgentId: "agent-em", createdAt: b.now(), body: `${RELAYED_MARK}\nYes. Go ahead: ship it.` });
     const log = { ...silent, warn: (o, m) => warns.push(`${m ?? o}`), child() { return log; } };
-    const escalate = async (body) => { calls.push(body); return record_answer; };
+    // As the real action on success: a record_answer hop joins the record on the card, and the card is released to the seat.
+    const escalate = async (body) => {
+      calls.push(body);
+      if (record_answer.ok) {
+        const answered = { from: "agent-em", to: "agent-em", operation: "record_answer", idempotencyKey: body.idempotencyKey, at: b.now() };
+        b.comments.push({ id: "m2", authorAgentId: "agent-em", createdAt: answered.at, createdByRunId: "r2",
+          body: marker({ card: "c-1", ...(legacy ? { [ASK_CARD_FIELD]: "own-1", [ASK_CARD_IDENTIFIER_FIELD]: "R-1" } : {}), hops: [hop, answered] }) });
+        b.card.status = "todo";
+      }
+      return record_answer;
+    };
     const seat = seatOn(b, { resolveOwn: true, log, escalate });
     const answerFn = async (p) => { prompts.push(p); return STUCK; };
     b.wake("r2");
@@ -867,8 +884,25 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
       assert.deepStrictEqual(t.calls.map((c) => [c.operation, c.issue, c.idempotencyKey]), [["record_answer", "c-1", "answer:k-ask"]]);
       assert.strictEqual(t.prompts.length, 0, "the model was started before the answer was recorded");
       assert.ok(t.b.writes.some((w) => w.runId === "r2"), "the run was not ended");
+      assert.deepStrictEqual(t.b.fixture.wakeups, [{ source: "automation", reason: "paperclip_ask_answer_recorded", payload: { issueId: "c-1" } }], "the seat was not woken");
+      assert.strictEqual(t.warns.filter((w) => /wake/i.test(w)).length, 0, `warns ${t.warns}`);
+      // The answer is on the record, and the card resumes: the woken seat works it, nothing is recorded again.
+      assert.strictEqual(t.b.card.status, "todo");
+      t.b.wake("r3"); await t.tick();
+      assert.strictEqual(t.calls.length, 1, "recorded again on the resumed card");
+      assert.strictEqual(t.prompts.length, 1, "the resumed card was not worked");
     });
   }
+
+  await check("the seat's self-wakeup refused (404): the answer is still recorded, the failure is logged, nothing throws", async () => {
+    const t = heldAsk();
+    t.b.fixture.wakeupFails = true;
+    await t.tick();
+    assert.deepStrictEqual(t.calls.map((c) => c.operation), ["record_answer"]);
+    assert.deepStrictEqual(t.b.fixture.wakeups, []);
+    assert.strictEqual(t.prompts.length, 0);
+    assert.ok(t.warns.length >= 1, "the failed wakeup was not logged");
+  });
 
   await check("a Discord answer relayed onto the origin (RELAYED_MARK) is recorded the same way", async () => {
     const t = heldAsk({ answer: "relayed" });

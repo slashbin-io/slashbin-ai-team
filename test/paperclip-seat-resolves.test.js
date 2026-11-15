@@ -8,7 +8,7 @@
  * with nothing open it waits on, once per answer.
  */
 const assert = require("assert");
-const { ASK_OPERATION, ASK_CARD_FIELD, ASK_CARD_IDENTIFIER_FIELD } = require("../lib/owner-asks");
+const { ASK_OPERATION, ASK_CARD_FIELD, ASK_CARD_IDENTIFIER_FIELD, RELAYED_MARK } = require("../lib/owner-asks");
 const { mkdtempSync, readFileSync } = require("fs");
 const { join } = require("path");
 const { tmpdir } = require("os");
@@ -228,6 +228,8 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
         // As the real action: the owner's card is added to the card's blockers.
         b.card.blockedBy = [...(b.card.blockedBy ?? []), { id: "own-1", identifier: "R-1", status: "todo" }];
       } else if (body.operation === "hand_up") { b.card.assigneeAgentId = "agent-po"; b.card.status = "blocked"; }
+      // As the live action before #597: it reads the person's card only, and he answered on this one.
+      else if (body.operation === "record_answer") return { ok: false, code: "no_ray_answer", message: "The person has not commented on their card yet." };
       return { ok: true, operation: body.operation, holder: { id: "agent-po" }, hops: [] };
     };
     r.log = { ...silent, warn: (_o, m) => r.warns.push(String(m ?? _o)), error: (_o, m) => r.errors.push(String(m ?? _o)), child() { return r.log; } };
@@ -836,6 +838,81 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
     refuse = false;
     await seat(answer).tick();
     assert.strictEqual(prompts.length, 2, "not run again after the back-off");
+  });
+
+  // An ask held on the seat's own card (slashbin_mcp_services#597): the hop names no person's card, and the person answers on this card.
+  const heldAsk = ({ legacy = false, answer = "user", record_answer = { ok: true, operation: "record_answer", holder: { id: "agent-em" }, hops: [] } } = {}) => {
+    const b = board({ by: { createdByAgentId: "agent-em" } });
+    const calls = [], warns = [], prompts = [];
+    b.card.status = "blocked";
+    b.record(SEAT, { status: { from: "in_progress", to: "blocked" } }, null);
+    const hop = { from: "agent-em", to: "user-avery", operation: ASK_OPERATION, idempotencyKey: "k-ask", at: b.now(), ...(legacy ? { [ASK_CARD_FIELD]: "own-1" } : {}) };
+    b.comments.push({ id: "m1", authorAgentId: "agent-em", createdAt: hop.at, createdByRunId: "r0",
+      body: marker({ card: "c-1", ...(legacy ? { [ASK_CARD_FIELD]: "own-1", [ASK_CARD_IDENTIFIER_FIELD]: "R-1" } : {}), hops: [hop] }) });
+    if (answer === "user") b.comments.push({ id: "u1", authorAgentId: null, authorUserId: "user-avery", createdAt: b.now(), body: "Yes, go ahead." });
+    if (answer === "relayed") b.comments.push({ id: "u1", authorAgentId: "agent-em", createdAt: b.now(), body: `${RELAYED_MARK}\nYes. Go ahead: ship it.` });
+    const log = { ...silent, warn: (o, m) => warns.push(`${m ?? o}`), child() { return log; } };
+    const escalate = async (body) => { calls.push(body); return record_answer; };
+    const seat = seatOn(b, { resolveOwn: true, log, escalate });
+    const answerFn = async (p) => { prompts.push(p); return STUCK; };
+    b.wake("r2");
+    const poller = seat(answerFn); // one poller across wakes, as the bot runs it
+    return { b, calls, warns, prompts, seat, answerFn, tick: () => poller.tick() };
+  };
+
+  for (const [shape, legacy] of [["new shape (no person's card)", false], ["legacy shape (the person's card still open)", true]]) {
+    await check(`${shape}: a board user's comment after the ask is recorded through record_answer on the origin, the run ends, and the seat wakes itself; no model run`, async () => {
+      const t = heldAsk({ legacy });
+      await t.tick();
+      assert.deepStrictEqual(t.calls.map((c) => [c.operation, c.issue, c.idempotencyKey]), [["record_answer", "c-1", "answer:k-ask"]]);
+      assert.strictEqual(t.prompts.length, 0, "the model was started before the answer was recorded");
+      assert.ok(t.b.writes.some((w) => w.runId === "r2"), "the run was not ended");
+    });
+  }
+
+  await check("a Discord answer relayed onto the origin (RELAYED_MARK) is recorded the same way", async () => {
+    const t = heldAsk({ answer: "relayed" });
+    await t.tick();
+    assert.deepStrictEqual(t.calls.map((c) => c.operation), ["record_answer"]);
+    assert.strictEqual(t.prompts.length, 0);
+  });
+
+  await check("no answer after the ask, or a comment from the seat itself: nothing is recorded", async () => {
+    const t = heldAsk({ answer: null });
+    t.b.comments.push({ id: "s1", authorAgentId: "agent-em", createdAt: t.b.now(), body: "Still waiting." });
+    await t.tick();
+    assert.deepStrictEqual(t.calls, []);
+  });
+
+  await check("record_answer refused (the action reads only the person's card): the card is left as it is, no hand-up, no ask, the refusal logged once across wakes", async () => {
+    const t = heldAsk({ record_answer: { ok: false, code: "no_ray_answer", message: "No person's card is open on this card." } });
+    await t.tick();
+    t.b.wake("r3"); await t.tick();
+    t.b.wake("r4"); await t.tick();
+    assert.deepStrictEqual(t.calls.map((c) => c.operation), ["record_answer"], "retried or routed on");
+    assert.strictEqual(t.prompts.length, 0, "the model was started on a refused answer");
+    assert.strictEqual(t.b.card.assigneeAgentId, "agent-em", "the card was handed on");
+    assert.strictEqual(t.warns.filter((w) => /record_answer refused/.test(w)).length, 1, `warns ${t.warns}`);
+  });
+
+  await check("legacy ask (the person's card open): record_answer refused with no_ray_answer is logged once and the seat is still run on the answer, board user's or relayed, as before", async () => {
+    for (const answer of ["user", "relayed"]) {
+      const t = heldAsk({ legacy: true, answer, record_answer: { ok: false, code: "no_ray_answer", message: "Not commented on their card yet." } });
+      await t.tick();
+      assert.strictEqual(t.prompts.length, 1, `${answer}: the answer was not worked`);
+      assert.deepStrictEqual(t.calls.map((c) => c.operation), ["record_answer"]);
+      t.b.wake("r3"); await t.tick();
+      assert.strictEqual(t.calls.length, 1, `${answer}: refused again`);
+      assert.strictEqual(t.warns.filter((w) => /record_answer refused/.test(w)).length, 1, `${answer}: warns ${t.warns}`);
+    }
+  });
+
+  await check("legacy: an answer relayed from Discord whose card the relay closed is not intercepted: the woken seat works it as before", async () => {
+    const t = heldAsk({ legacy: true, answer: "relayed" });
+    t.b.owners["own-1"].status = "done";
+    await t.tick();
+    assert.deepStrictEqual(t.calls, []);
+    assert.strictEqual(t.prompts.length, 1, "the relayed answer was not worked");
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

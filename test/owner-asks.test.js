@@ -291,6 +291,54 @@ async function post(registry, n, id) {
     await p.tick(); assert.strictEqual(calls.length, 2, "accepted, so never announced again");
   });
 
+  // The ask kept on the seat's own card: the hop names no person's card, the question is the marker comment itself.
+  const originRecord = (key) => ({ card: "iss-1", hops: [{ from: ME.id, to: "user-1", operation: ASK_OPERATION, idempotencyKey: key, at: "2026-10-21T00:00:00Z" }] });
+  const originMarker = (key) => `<!-- process.escalate:${Buffer.from(JSON.stringify(originRecord(key))).toString("base64url")} -->\n\n**Decision**\n> Approve the rollout?\n\n**Recommendation**\n> roll out to all stores`;
+  const originBoard = (key) => board({ "GET /issues/iss-1/comments": [{ id: "c1", authorAgentId: ME.id, body: originMarker(key), createdAt: "2026-10-21T00:00:00Z", createdByRunId: "run-9" }] });
+
+  await check("an ask with no person's card is announced as bound to the origin card, the question read off the marker comment", async () => {
+    const b = originBoard("k1"); const seen = [];
+    const p = poller(b, { onOwnerAsk: async (a) => { seen.push(a); return true; } });
+    await p.tick(); await p.tick();
+    assert.strictEqual(seen.length, 1);
+    assert.deepStrictEqual([seen[0].issueId, seen[0].ownerCardId, seen[0].onOrigin, seen[0].marker], ["iss-1", "iss-1", true, "k1"]);
+    assert.strictEqual(seen[0].decision, "Approve the rollout?");
+    assert.strictEqual(seen[0].recommendation, "roll out to all stores");
+    assert.ok(!b.gets.includes("GET /issues/own-1"), "a person's card was read");
+  });
+
+  await check("an origin-bound ask is not announced once the card is done, or when a later hop moved on", async () => {
+    const seen = [];
+    await poller(board({ ...originBoard("k1").routes, "GET /issues/iss-1": { id: "iss-1", identifier: "T-1", assigneeAgentId: ME.id, status: "done" } }), { onOwnerAsk: async (a) => { seen.push(a); return true; } }).tick();
+    assert.strictEqual(seen.length, 0);
+  });
+
+  await check("a second ask on the same origin card is a new ask: bound under its own key, announced again", async () => {
+    const r = fresh(); const sent = [];
+    const ask = (key) => ({ ...ASK(1), ownerCardId: "iss-1", onOrigin: true, dedupeId: `iss-1:${key}`, marker: key });
+    const send = async (t) => { sent.push(t); return { id: `m-${sent.length}` }; };
+    await announceAsk({ registry: r, ask: ask("k1"), channelId: CH, answerers: [OWNER], send });
+    await announceAsk({ registry: r, ask: ask("k1"), channelId: CH, answerers: [OWNER], send });
+    assert.strictEqual(sent.length, 1, "the same ask was posted twice");
+    const second = await announceAsk({ registry: r, ask: ask("k2"), channelId: CH, answerers: [OWNER], send });
+    assert.strictEqual(second.posted, true);
+    assert.strictEqual(sent.length, 2);
+    assert.strictEqual(second.binding.onOrigin, true);
+    // A legacy ask is still keyed by its person's card.
+    assert.strictEqual((await announceAsk({ registry: r, ask: ASK(3), channelId: CH, answerers: [OWNER], send })).binding.key, "default:own-3");
+  });
+
+  await check("a yes on an origin-bound ask is relayed as the answer comment on the origin, with no person's card to close; the card is woken once", async () => {
+    const b = board();
+    const p = poller(b, {});
+    const binding = { key: "default:iss-1:k1", issueId: "iss-1", ownerCardId: "iss-1", onOrigin: true, yesAction: "roll out to all stores", steps: {} };
+    const out = await p.relayOwnerAnswer(binding, "yes", { text: "yes", by: { id: OWNER, tag: "owner" }, save() {} });
+    assert.strictEqual(out.woke, true);
+    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/comments", "PATCH /issues/iss-1"]);
+    assert.ok(b.writes[0].body.body.startsWith(RELAYED_MARK));
+    assert.deepStrictEqual(b.writes[1].body, { status: "todo" });
+  });
+
   await check("section parser and wiring", () => {
     assert.strictEqual(sectionOf(ownerDescription, "Decision"), "Approve the rollout?");
     assert.strictEqual(sectionOf(ownerDescription, "Evidence"), "");

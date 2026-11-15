@@ -97,6 +97,7 @@ function board({ description = "Ship the release.", by = { createdByAgentId: "ag
     if (m[2] === "/activity") return ok(activity);
     if (m[2] === "/comments") return ok(comments);
     if (m[2] === "/runs") return ok(runs);
+    if (m[2] === "/interactions") return ok(fixture.interactions ?? []);
     return { ok: false, status: 404, text: async () => "" };
   };
   /** A wake the bot caused itself: a new run on the same, unchanged ask. */
@@ -848,14 +849,14 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
   });
 
   // An ask held on the seat's own card (slashbin_mcp_services#597): the hop names no person's card, and the person answers on this card.
-  const heldAsk = ({ legacy = false, answer = "user", record_answer = { ok: true, operation: "record_answer", holder: { id: "agent-em" }, hops: [] } } = {}) => {
+  const heldAsk = ({ legacy = false, answer = "user", askInteraction = undefined, record_answer = { ok: true, operation: "record_answer", holder: { id: "agent-em" }, hops: [] } } = {}) => {
     const b = board({ by: { createdByAgentId: "agent-em" } });
     const calls = [], warns = [], prompts = [];
     b.card.status = "blocked";
     b.record(SEAT, { status: { from: "in_progress", to: "blocked" } }, null);
     const hop = { from: "agent-em", to: "user-avery", operation: ASK_OPERATION, idempotencyKey: "k-ask", at: b.now(), ...(legacy ? { [ASK_CARD_FIELD]: "own-1" } : {}) };
     b.comments.push({ id: "m1", authorAgentId: "agent-em", createdAt: hop.at, createdByRunId: "r0",
-      body: marker({ card: "c-1", ...(legacy ? { [ASK_CARD_FIELD]: "own-1", [ASK_CARD_IDENTIFIER_FIELD]: "R-1" } : {}), hops: [hop] }) });
+      body: marker({ card: "c-1", ...(legacy ? { [ASK_CARD_FIELD]: "own-1", [ASK_CARD_IDENTIFIER_FIELD]: "R-1" } : {}), ...(askInteraction ? { askInteraction } : {}), hops: [hop] }) });
     if (answer === "user") b.comments.push({ id: "u1", authorAgentId: null, authorUserId: "user-avery", createdAt: b.now(), body: "Yes, go ahead." });
     if (answer === "relayed") b.comments.push({ id: "u1", authorAgentId: "agent-em", createdAt: b.now(), body: `${RELAYED_MARK}\nYes. Go ahead: ship it.` });
     const log = { ...silent, warn: (o, m) => warns.push(`${m ?? o}`), child() { return log; } };
@@ -909,6 +910,25 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
     await t.tick();
     assert.deepStrictEqual(t.calls.map((c) => c.operation), ["record_answer"]);
     assert.strictEqual(t.prompts.length, 0);
+  });
+
+  await check("#597: he answered with the card's own buttons (no comment): the confirmation he resolved is recorded the same way", async () => {
+    for (const status of ["accepted", "rejected"]) {
+      const t = heldAsk({ answer: null, askInteraction: "int-1" });
+      t.b.fixture.interactions = [{ id: "int-1", kind: "request_confirmation", status, resolvedByUserId: "user-avery" }];
+      await t.tick();
+      assert.deepStrictEqual(t.calls.map((c) => c.operation), ["record_answer"], status);
+      assert.strictEqual(t.prompts.length, 0, status);
+    }
+  });
+
+  await check("#597: a confirmation still pending, or resolved by someone other than the person asked, is not an answer", async () => {
+    for (const it of [{ status: "pending" }, { status: "accepted", resolvedByUserId: "user-other" }]) {
+      const t = heldAsk({ answer: null, askInteraction: "int-1" });
+      t.b.fixture.interactions = [{ id: "int-1", kind: "request_confirmation", ...it }];
+      await t.tick();
+      assert.deepStrictEqual(t.calls, [], JSON.stringify(it));
+    }
   });
 
   await check("no answer after the ask, or a comment from the seat itself: nothing is recorded", async () => {

@@ -256,7 +256,7 @@ const RETURNED = `Only the Product Owner can rule on scope.\n${OUTCOME_MARK} ret
     const bot = readFileSync(join(__dirname, "..", "bot.js"), "utf8");
     // The bearer is a connector key to the one run-environment builder: no
     // run of any runtime has it, and no command can read it.
-    assert.match(bot, /connectorKeys: \[\.\.\.boardKeyEnvs\(process\.env\), \.\.\.escalateBearer\(\)\],/);
+    assert.match(bot, /connectorKeys: \[\.\.\.boardKeyEnvs\(process\.env\), \.\.\.escalateBearer\(\), \.\.\.ownerKeyEnv\(\)\],/);
     const { buildRunEnv } = require("../lib/permission-mode");
     const env = { PATH: "/usr/bin", HOME: "/home/bot", ESCALATE_BEARER: "bearer-value-long-enough-0123456789" };
     for (const runtime of ["claude", "codex"]) for (const run of ["session", "parity", "board"]) {

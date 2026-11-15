@@ -565,8 +565,8 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
     t.b.wake("r3"); await t.seat(t.answer).tick();
     assert.strictEqual(t.prompts.length, 2, "the same answer was looked at twice");
     assert.ok(t.b.writes.slice(before).some((w) => w.runId === "r3"), "the wake was not answered by the note");
-    // A newer ask, answered blocked again: its wait gets its own look. (Not a board user's comment: one of those on an open ask is its answer, recorded or left, never a new ask.)
-    t.b.comments.push({ id: `c${t.b.comments.length}`, authorAgentId: null, authorUserId: null, createdAt: new Date(Date.now() + 60000).toISOString(), body: "Anything new on this?" });
+    // A newer ask, answered blocked again: its wait gets its own look.
+    t.b.comments.push({ id: `c${t.b.comments.length}`, authorAgentId: null, authorUserId: "user-avery", createdAt: new Date(Date.now() + 60000).toISOString(), body: "Anything new on this?" });
     t.b.wake("r4"); await t.seat(t.answer).tick();
     assert.strictEqual(t.prompts.length, 3, "the newer ask was not run");
     assert.doesNotMatch(t.prompts[2], LOOK, "a new ask was run as a look");
@@ -893,6 +893,18 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
     assert.strictEqual(t.prompts.length, 0, "the model was started on a refused answer");
     assert.strictEqual(t.b.card.assigneeAgentId, "agent-em", "the card was handed on");
     assert.strictEqual(t.warns.filter((w) => /record_answer refused/.test(w)).length, 1, `warns ${t.warns}`);
+  });
+
+  await check("legacy ask (the person's card open): record_answer refused with no_ray_answer is logged once and the seat is still run on the answer, board user's or relayed, as before", async () => {
+    for (const answer of ["user", "relayed"]) {
+      const t = heldAsk({ legacy: true, answer, record_answer: { ok: false, code: "no_ray_answer", message: "Not commented on their card yet." } });
+      await t.tick();
+      assert.strictEqual(t.prompts.length, 1, `${answer}: the answer was not worked`);
+      assert.deepStrictEqual(t.calls.map((c) => c.operation), ["record_answer"]);
+      t.b.wake("r3"); await t.tick();
+      assert.strictEqual(t.calls.length, 1, `${answer}: refused again`);
+      assert.strictEqual(t.warns.filter((w) => /record_answer refused/.test(w)).length, 1, `${answer}: warns ${t.warns}`);
+    }
   });
 
   await check("legacy: an answer relayed from Discord whose card the relay closed is not intercepted: the woken seat works it as before", async () => {

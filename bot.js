@@ -20,6 +20,7 @@ const { isWakeJob, buildWakePrompt } = require("./lib/wake");
 const { signalRefusal, normalizeSignal, tokenMatches: bridgeTokenMatches } = require("./lib/bridge-signal");
 const { createOwnerAsks, announceAsk, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
 const { parseRunnerRefusal, detectRefusal, DEFAULT_RULES: RUNNER_REFUSAL_DEFAULTS } = require("./lib/refusal");
+const { parseRoutineRunner, createRoutineRunner } = require("./lib/routine-runner");
 const { createPaperclipPoller, paperclipBoards, boardKeyEnvs, replyCollector, parseIntake, parseRewake, parseResolveOwn, resolveOwnRouteProblem } = require("./lib/paperclip");
 const { parseContract, toolLine } = require("./lib/handoff-contract");
 const { escalateClientFor, escalateBoard } = require("./lib/process-escalate");
@@ -3634,8 +3635,11 @@ if (PAPERCLIP_BOARDS.length && PAPERCLIP_CWD_DENIED) {
 } else if (PAPERCLIP_BOARDS.length && BOARD_POLICY_PROBLEMS.length) {
   for (const problem of BOARD_POLICY_PROBLEMS) log.error(`Paperclip connector off — ${problem}`);
 }
+// A command that answers a routine's card in place of a model run
+// (lib/routine-runner.js). Unset, every card gets the model.
+const ROUTINE_RUNNER = parseRoutineRunner(process.env.PAPERCLIP_ROUTINE_RUNNER);
 if (PAPERCLIP_BOARDS.length && !BOARD_TRIGGERS.problems.length) {
-  log.info({ intake: BOARD_TRIGGERS.intake, rewake: BOARD_TRIGGERS.rewake || "off",
+  log.info({ intake: BOARD_TRIGGERS.intake, rewake: BOARD_TRIGGERS.rewake || "off", routineRunner: ROUTINE_RUNNER ? ROUTINE_RUNNER.join(" ") : "off",
     intakeFrom: process.env.PAPERCLIP_INTAKE ? "PAPERCLIP_INTAKE" : "default",
     rewakeFrom: process.env.PAPERCLIP_REWAKE ? "PAPERCLIP_REWAKE" : "default" }, "Paperclip model-work triggers");
 }
@@ -3698,6 +3702,16 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
       rewake: BOARD_TRIGGERS.rewake,
       refusalBackoffMs: RUNNER_REFUSAL.backoffMinutes * 60_000,
       resolveOwn: BOARD_TRIGGERS.resolveOwn,
+      // The runner gets what a board run's commands get: the same working
+      // directory, the same environment, the same time limit.
+      routineRunner: ROUTINE_RUNNER ? createRoutineRunner({
+        command: ROUTINE_RUNNER, cwd: CLAUDE_CWD, timeoutMs: CLAUDE_TIMEOUT_MS, log: pLog,
+        env: () => {
+          const built = runEnvFor(BOARD_KIND === "board" ? "board" : "parity");
+          if (built.problems.length) throw new Error(`Run environment refused — ${built.problems.join("; ")}`);
+          return built.env;
+        },
+      }) : null,
       externalWriter,
       // A blocked card held by this bot with an escalation label is worked and
       // left blocked; one it resolves goes back down (escalationReturnTo, else

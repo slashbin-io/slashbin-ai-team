@@ -29,6 +29,7 @@ repeat old work does not start the model.
 |---|---|---|
 | `PAPERCLIP_INTAKE` | every status but `backlog` | The card statuses in which a **new ask** starts the model |
 | `PAPERCLIP_REWAKE` | `off` | How many times the model looks again at an ask it **answered as waiting** when the card wakes with nothing new |
+| `PAPERCLIP_ROUTINE_RUNNER` | unset | A command that answers a **routine's card** in place of a model run |
 
 **`PAPERCLIP_INTAKE`** takes a comma list of card statuses (`backlog`, `todo`,
 `in_progress`, `in_review`, `done`, `blocked`, `cancelled`), or `all`. The status
@@ -107,8 +108,35 @@ board connector stays off, and `npm run doctor` fails the check), and the
 poller throws when built, so no wake can run in that state. A board with no
 route of its own is left off while the others run.
 
-An unreadable value in any of these settings turns the board connector off and logs the
-reason. The harness does not guess.
+**`PAPERCLIP_ROUTINE_RUNNER`** is a command, for example
+`node scripts/routine-card.mjs`. A routine that fires opens a card, and the card
+often asks for nothing a model adds: run a job, post what it reported. With the
+setting, a card a routine opened that has no comment on it yet is handed to your
+command before any model run:
+
+- The card arrives on stdin as one JSON object: `identifier`, `title`,
+  `description`.
+- **Exit 0:** what the command printed is posted as the card's answer, routed as
+  the model's answer would be. End it with an outcome line to leave the card
+  blocked. The model is not started.
+- **Exit 3:** the command declines the card, and the model is started as if no
+  runner were set. Use it for every card the command does not recognise.
+- **Any other exit, no output, or a run longer than `CLAUDE_TIMEOUT_MS`:** the
+  failure is logged and the model is started. A broken command never leaves a
+  card unanswered.
+
+Only the first answer on a card is the command's. Once anyone has commented, the
+card is a conversation and the model answers it. Cards that are not a routine's
+never reach the command.
+
+The command is split on spaces and started without a shell, in `CLAUDE_CWD`, with
+the environment a board run's commands get. It is your own code and is not
+confined as a model run is. A restarted bot may start it again for the same
+card, so it must be safe to repeat.
+
+An unreadable value in `PAPERCLIP_INTAKE`, `PAPERCLIP_REWAKE` or
+`PAPERCLIP_RESOLVE_OWN` turns the board connector off and logs the reason. The
+harness does not guess.
 
 ## Recommended setup: quiet waiting
 
@@ -149,7 +177,8 @@ The settings decide **whether** a model run starts. The agent's `CLAUDE.md` or
 ## Reading the log
 
 At start the harness logs `Paperclip model-work triggers`, with the effective
-`intake` and `rewake` and whether each came from its setting or the default.
+`intake` and `rewake` and whether each came from its setting or the default, and
+`routineRunner` (the command, or `off`).
 
 Each wake that does not start the model says which setting decided it:
 
@@ -157,6 +186,10 @@ Each wake that does not start the model says which setting decided it:
   `status` and `intake`.
 - `Paperclip task woke again on an answered ask — re-wakes are off …` or
   `… its looks are used up …`, with `setting`, `rewake` and `looks`.
+
+- `Routine card answered by its runner — no model run`, with `issue` and `ms`.
+  `Routine runner failed — the model answers this card` means the command
+  broke, and the model ran instead.
 
 Each wake that does start it logs `Paperclip task waiting — running the bot`
 with a `why` field.

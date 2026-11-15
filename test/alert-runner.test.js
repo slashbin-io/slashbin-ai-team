@@ -16,7 +16,7 @@ async function check(label, fn) {
   catch (e) { console.log(`  FAIL ${label}\n       ${e.message}`); fail++; }
 }
 const silent = { info() {}, warn() {}, error() {}, child() { return silent; } };
-const CH = "1484731236093006004", HOOK = "1541625394912952484";
+const CH = "123456789012345678", HOOK = "grafana-webhook";
 const ENV = { ALERT_CHANNELS: CH, ALERT_WEBHOOKS: HOOK, ALERT_RUNNER: "node runner.mjs" };
 const config = parseAlertConfig(ENV, parseRoutineRunner).config;
 

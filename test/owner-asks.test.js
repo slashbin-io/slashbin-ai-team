@@ -405,10 +405,12 @@ async function post(registry, n, id) {
     assert.strictEqual(r.get(binding.key).state, "open");
   });
 
-  await check("#597: a confirmation he already clicked on the card is not resolved again, and nothing is relayed over it", async () => {
+  await check("#597: a confirmation he already accepted on the card is not resolved again; his card yes is relayed and the card woken so the holder continues", async () => {
     const b = confirmBoard({ interaction: { id: "int-1", kind: "request_confirmation", status: "accepted", resolvedByUserId: "user-1" } });
     const out = await poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer(originBinding(), "yes", { text: "yes", by: { id: OWNER }, save() {} });
-    assert.deepStrictEqual(b.writes, []);
+    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/comments", "PATCH /issues/iss-1"]);
+    assert.match(b.writes[0].body.body, /given on this card \(confirmation accepted\)/);
+    assert.match(b.writes[0].body.body, /Yes\. Go ahead: roll out\./);
     assert.deepStrictEqual(out.standing, { status: "accepted", verdict: "yes" });
   });
 
@@ -421,10 +423,16 @@ async function post(registry, n, id) {
     return { out, saved: r.get(bound.key) };
   }
 
-  await check("R1: a Discord yes that loses the race to his rejection on the card relays nothing, saves no, and says his card answer stands", async () => {
+  const noGoAhead = (b) => b.writes.filter((w) => w.key === "POST /issues/iss-1/comments").forEach((w) => {
+    assert.match(w.body.body, /No\. Do not go ahead/);
+    assert.doesNotMatch(w.body.body, /Go ahead: |yes ship it/, "the losing Discord yes reached the relay");
+  });
+
+  await check("R1: a Discord yes that loses the race to his rejection on the card relays his no, saves no, and says his card answer stands", async () => {
     const b = confirmBoard({ acceptFails: { path: "/accept", after: (routes) => { routes["GET /issues/iss-1/interactions"] = [rejectedOnCard]; } } });
     const { out, saved } = await answerVia(b);
-    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/interactions/int-1/accept"], "an approval relay or reopen was written over his rejection");
+    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/interactions/int-1/accept", "POST /issues/iss-1/comments", "PATCH /issues/iss-1"]);
+    noGoAhead(b);
     assert.strictEqual(saved.answer.verdict, "no");
     assert.strictEqual(saved.state, "answered");
     assert.strictEqual(out.ok, false);
@@ -432,18 +440,29 @@ async function post(registry, n, id) {
     assert.doesNotMatch(out.reply, /Recorded: yes/);
   });
 
-  await check("R3: a confirmation already rejected on the card before the Discord yes is processed: no writes, no saved yes, no go-ahead", async () => {
+  await check("R3: a confirmation already rejected on the card before the Discord yes is processed: his no is relayed, no saved yes, no go-ahead", async () => {
     const b = confirmBoard({ interaction: rejectedOnCard });
     const { out, saved } = await answerVia(b);
-    assert.deepStrictEqual(b.writes, []);
+    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/comments", "PATCH /issues/iss-1"]);
+    noGoAhead(b);
     assert.strictEqual(saved.answer.verdict, "no");
     assert.match(out.reply, /not recorded/);
   });
 
-  await check("R2: with nothing relayed, no Discord approval comment exists for askOf or the task prompt to pick up", async () => {
+  await check("R2: the only relay the task prompt can pick up is his card no; no Discord approval comment exists", async () => {
     const b = confirmBoard({ interaction: rejectedOnCard });
     await answerVia(b);
-    assert.ok(!b.writes.some((w) => w.key === "POST /issues/iss-1/comments"));
+    noGoAhead(b);
+    assert.ok(b.writes.every((w) => !/given on Discord/.test(w.body?.body ?? "")));
+  });
+
+  await check("a Discord yes on a card he already accepted is acknowledged as recorded, and the holder is woken onto it", async () => {
+    const b = confirmBoard({ interaction: { id: "int-1", kind: "request_confirmation", status: "accepted", resolvedByUserId: "user-1" } });
+    const { out, saved } = await answerVia(b);
+    assert.strictEqual(out.ok, true);
+    assert.match(out.reply, /Recorded: yes/);
+    assert.strictEqual(saved.answer.verdict, "yes");
+    assert.ok(b.writes.some((w) => w.key === "PATCH /issues/iss-1" && w.body.status === "todo"));
   });
 
   await check("a confirmation closed on the card by someone else is reported closed, with no verdict saved as his", async () => {

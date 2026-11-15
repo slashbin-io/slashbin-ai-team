@@ -247,6 +247,9 @@ For Claude and Codex differences, read [runtimes.md](docs/runtimes.md).
 | `ALLOWED_USERS` | *(empty = everyone)* | User IDs allowed to drive the bot |
 | `BOT_REQUIRE_ALLOWLIST` | `false` | Refuse to start when `ALLOWED_USERS` is empty |
 | `MONITOR_CHANNELS` | *(none)* | Channels answered without an @mention |
+| `ALERT_CHANNELS` | *(none)* | Channels where a monitoring webhook posts alerts. Set with `ALERT_WEBHOOKS` and `ALERT_RUNNER`, or the alert runner stays off and the bot logs why |
+| `ALERT_WEBHOOKS` | *(none)* | Webhook ids whose messages in `ALERT_CHANNELS` are alerts. Any other message there, from a person, a bot or another webhook, is treated as it would be without the alert runner |
+| `ALERT_RUNNER` | unset | The command that answers an alert, never the model: alert text is a vendor's, not a person's request. It follows `PAPERCLIP_ROUTINE_RUNNER`'s contract (JSON on stdin: `identifier` = message id, `title` = embed title, `description` = full text; exit 0 posts stdout in a thread on the alert, exit 3 declines with no thread). Any other exit is reported in the thread. Alerts run one at a time, in `CLAUDE_CWD`, with a board run's environment and `CLAUDE_TIMEOUT_MS` |
 | `REPLY_FINAL_TEXT_ONLY` | `false` | `true` posts only the text written after the run's last tool call; anything said before a tool call is dropped from the reply |
 | `ALLOWED_CHANNELS` | *(none)* | Restrict responses to these channels |
 | `ALLOWED_BOTS` | *(none)* | Peer bot IDs allowed to interact |

@@ -405,16 +405,53 @@ async function post(registry, n, id) {
     assert.strictEqual(r.get(binding.key).state, "open");
   });
 
-  await check("#597: a confirmation he already clicked on the card is not resolved again; the relay goes on", async () => {
+  await check("#597: a confirmation he already clicked on the card is not resolved again, and nothing is relayed over it", async () => {
     const b = confirmBoard({ interaction: { id: "int-1", kind: "request_confirmation", status: "accepted", resolvedByUserId: "user-1" } });
-    await poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer(originBinding(), "yes", { text: "yes", by: { id: OWNER }, save() {} });
-    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/comments", "PATCH /issues/iss-1"]);
+    const out = await poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer(originBinding(), "yes", { text: "yes", by: { id: OWNER }, save() {} });
+    assert.deepStrictEqual(b.writes, []);
+    assert.deepStrictEqual(out.standing, { status: "accepted", verdict: "yes" });
   });
 
-  await check("#597: an accept that loses the race to his click keeps his answer and relays", async () => {
-    const b = confirmBoard({ acceptFails: { path: "/accept", after: (routes) => { routes["GET /issues/iss-1/interactions"] = [{ id: "int-1", kind: "request_confirmation", status: "rejected", resolvedByUserId: "user-1" }]; } } });
-    const out = await poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer(originBinding(), "yes", { text: "yes", by: { id: OWNER }, save() {} });
-    assert.strictEqual(out.woke, true);
+  // Tech Lead S2 on #168 (R1-R3): his answer on the card wins; a conflicting Discord one is never relayed.
+  const rejectedOnCard = { id: "int-1", kind: "request_confirmation", status: "rejected", resolvedByUserId: "user-1" };
+  async function answerVia(b, binding = originBinding()) {
+    const r = fresh();
+    const { binding: bound } = await announceAsk({ registry: r, ask: { ...ASK(1), ...binding, dedupeId: "iss-1:k1" }, channelId: CH, answerers: [OWNER], send: async () => ({ id: "m-1" }) });
+    const out = await answerAsk({ registry: r, binding: bound, verdict: "yes", text: "yes ship it", by: { id: OWNER }, relays: { default: poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer } });
+    return { out, saved: r.get(bound.key) };
+  }
+
+  await check("R1: a Discord yes that loses the race to his rejection on the card relays nothing, saves no, and says his card answer stands", async () => {
+    const b = confirmBoard({ acceptFails: { path: "/accept", after: (routes) => { routes["GET /issues/iss-1/interactions"] = [rejectedOnCard]; } } });
+    const { out, saved } = await answerVia(b);
+    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/interactions/int-1/accept"], "an approval relay or reopen was written over his rejection");
+    assert.strictEqual(saved.answer.verdict, "no");
+    assert.strictEqual(saved.state, "answered");
+    assert.strictEqual(out.ok, false);
+    assert.match(out.reply, /already answered no on the card/);
+    assert.doesNotMatch(out.reply, /Recorded: yes/);
+  });
+
+  await check("R3: a confirmation already rejected on the card before the Discord yes is processed: no writes, no saved yes, no go-ahead", async () => {
+    const b = confirmBoard({ interaction: rejectedOnCard });
+    const { out, saved } = await answerVia(b);
+    assert.deepStrictEqual(b.writes, []);
+    assert.strictEqual(saved.answer.verdict, "no");
+    assert.match(out.reply, /not recorded/);
+  });
+
+  await check("R2: with nothing relayed, no Discord approval comment exists for askOf or the task prompt to pick up", async () => {
+    const b = confirmBoard({ interaction: rejectedOnCard });
+    await answerVia(b);
+    assert.ok(!b.writes.some((w) => w.key === "POST /issues/iss-1/comments"));
+  });
+
+  await check("a confirmation closed on the card by someone else is reported closed, with no verdict saved as his", async () => {
+    const b = confirmBoard({ interaction: { id: "int-1", kind: "request_confirmation", status: "rejected", resolvedByUserId: "someone-else" } });
+    const { out, saved } = await answerVia(b);
+    assert.deepStrictEqual(b.writes, []);
+    assert.strictEqual(saved.answer.verdict, null);
+    assert.match(out.reply, /already closed on the card \(rejected\)/);
   });
 
   await check("pre-#597: an ask whose record names no confirmation is relayed exactly as before, owner key or not", async () => {

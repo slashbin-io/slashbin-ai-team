@@ -704,7 +704,7 @@ check("a parity run withholds only the Discord and Paperclip credentials, and st
   // The Paperclip connector keys are withheld from every run, Discord's
   // included; a Codex MCP server that names one gets it back, and the model's
   // commands are kept from it (shellExclude) — all in the one builder.
-  assert.match(src, /connectorKeys: \[\.\.\.boardKeyEnvs\(process\.env\), \.\.\.escalateBearer\(\)\],/);
+  assert.match(src, /connectorKeys: \[\.\.\.boardKeyEnvs\(process\.env\), \.\.\.escalateBearer\(\), \.\.\.ownerKeyEnv\(\)\],/);
   const served = build({ runtime: "codex", env: { PAPERCLIP_API_KEY: "connector-key" }, mcpEnv: { PAPERCLIP_API_KEY: "connector-key" }, connectorKeys: ["PAPERCLIP_API_KEY"] });
   assert.strictEqual(served.env.PAPERCLIP_API_KEY, "connector-key", "a Codex MCP server loses the connector key its config names");
   assert.ok(served.shellExclude.includes("PAPERCLIP_API_KEY"), "a bypass Codex session's commands can read the connector key");
@@ -1029,7 +1029,7 @@ check("every configured board's key is scrubbed from a run, whatever BOT_SURFACE
   const { botSurfaces } = require("../lib/surfaces");
   const bot = readFileSync(join(__dirname, "..", "bot.js"), "utf8");
   // bot.js hands the builder every configured board's key, not the listeners that came on.
-  assert.match(bot, /connectorKeys: \[\.\.\.boardKeyEnvs\(process\.env\), \.\.\.escalateBearer\(\)\],/);
+  assert.match(bot, /connectorKeys: \[\.\.\.boardKeyEnvs\(process\.env\), \.\.\.escalateBearer\(\), \.\.\.ownerKeyEnv\(\)\],/);
   const extra = JSON.stringify([
     { id: "acme", url: "https://acme.example.com", keyEnv: "ACME_BOARD_KEY" },
     { id: "Broken Id", url: "https://other.example.com", keyEnv: "OTHER_BOARD_KEY" },   // off: a broken entry

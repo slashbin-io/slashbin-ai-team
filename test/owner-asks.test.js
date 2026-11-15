@@ -339,6 +339,96 @@ async function post(registry, n, id) {
     assert.deepStrictEqual(b.writes[1].body, { status: "todo" });
   });
 
+  // slashbin_mcp_services#597: the ask's record names a pending request_confirmation on the origin.
+  // The person's verified Discord answer resolves it as them, with the owner key, before the relay comment.
+  const confirmRecord = (key, extra = {}) => ({ card: "iss-1", hops: [{ from: ME.id, to: "user-1", operation: ASK_OPERATION, idempotencyKey: key, at: "2026-10-21T00:00:00Z" }], askInteraction: "int-1", ...extra });
+  const confirmMarker = (rec) => `<!-- process.escalate:${Buffer.from(JSON.stringify(rec)).toString("base64url")} -->\n\n**Decision**\n> Approve the rollout?`;
+  function confirmBoard({ rec = confirmRecord("k1"), interaction = { id: "int-1", kind: "request_confirmation", status: "pending" }, keyUser = "user-1", acceptFails = null } = {}) {
+    const writes = [], gets = [];
+    const routes = {
+      "GET /agents/me": ME,
+      "GET /issues/iss-1": { id: "iss-1", identifier: "T-1", assigneeAgentId: ME.id, status: "blocked" },
+      "GET /issues/iss-1/comments": [{ id: "c1", authorAgentId: ME.id, body: confirmMarker(rec), createdAt: "2026-10-21T00:00:00Z" }],
+      "GET /issues/iss-1/interactions": [interaction],
+      "GET /cli-auth/me": { userId: keyUser },
+    };
+    const fetch = async (url, init) => {
+      const key = `${init.method} ${url.replace(/^.*\/api/, "")}`;
+      const auth = init.headers?.Authorization ?? init.headers?.authorization;
+      if (init.method !== "GET") {
+        writes.push({ key, auth, body: init.body ? JSON.parse(init.body) : null });
+        if (acceptFails && key.endsWith(acceptFails.path)) { acceptFails.after?.(routes); return { ok: false, status: 409, text: async () => "conflict" }; }
+        return { ok: true, text: async () => "{}" };
+      }
+      gets.push({ key, auth });
+      if (!(key in routes)) return { ok: false, status: 404, text: async () => "nf" };
+      return { ok: true, text: async () => JSON.stringify(routes[key]) };
+    };
+    return { fetch, writes, gets, routes };
+  }
+  const originBinding = () => ({ key: "default:iss-1:k1", issueId: "iss-1", ownerCardId: "iss-1", onOrigin: true, marker: "k1", cardIdentifier: "T-1", yesAction: "roll out", steps: {} });
+
+  await check("#597: a Discord yes accepts the pending confirmation with the owner key, checked to be the person asked, before the relay comment", async () => {
+    const b = confirmBoard();
+    const p = poller(b, { ownerKey: "owner-key" });
+    const out = await p.relayOwnerAnswer(originBinding(), "yes", { text: "yes", by: { id: OWNER }, save() {} });
+    assert.strictEqual(out.woke, true);
+    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/interactions/int-1/accept", "POST /issues/iss-1/comments", "PATCH /issues/iss-1"]);
+    assert.strictEqual(b.writes[0].auth, "Bearer owner-key");
+    assert.strictEqual(b.writes[1].auth, "Bearer k", "the relay comment left the seat's key");
+    assert.ok(b.gets.some((g) => g.key === "GET /cli-auth/me" && g.auth === "Bearer owner-key"), "the key's user was not checked");
+  });
+
+  await check("#597: a Discord no rejects it, with his words as the reason", async () => {
+    const b = confirmBoard();
+    await poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer(originBinding(), "no", { text: "no, hold it", by: { id: OWNER }, save() {} });
+    assert.strictEqual(b.writes[0].key, "POST /issues/iss-1/interactions/int-1/reject");
+    assert.match(b.writes[0].body.reason, /no, hold it/);
+  });
+
+  await check("#597: an owner key that is not the person asked writes nothing and tells him to answer on the card", async () => {
+    const b = confirmBoard({ keyUser: "someone-else" });
+    await assert.rejects(poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer(originBinding(), "yes", { text: "yes", by: { id: OWNER }, save() {} }),
+      (e) => /not yours/.test(e.ownerReply) && /T-1/.test(e.ownerReply));
+    assert.deepStrictEqual(b.writes, []);
+  });
+
+  await check("#597: with no owner key, nothing is written and Discord says to answer on the card (answerAsk returns that reply)", async () => {
+    const b = confirmBoard();
+    const p = poller(b, {});
+    const r = fresh();
+    const { binding } = await announceAsk({ registry: r, ask: { ...ASK(1), ...originBinding(), dedupeId: "iss-1:k1" }, channelId: CH, answerers: [OWNER], send: async () => ({ id: "m-1" }) });
+    const out = await answerAsk({ registry: r, binding, verdict: "yes", text: "yes", by: { id: OWNER }, relays: { default: p.relayOwnerAnswer } });
+    assert.strictEqual(out.ok, false);
+    assert.match(out.reply, /Answer on the card instead/);
+    assert.deepStrictEqual(b.writes, []);
+    assert.strictEqual(r.get(binding.key).state, "open");
+  });
+
+  await check("#597: a confirmation he already clicked on the card is not resolved again; the relay goes on", async () => {
+    const b = confirmBoard({ interaction: { id: "int-1", kind: "request_confirmation", status: "accepted", resolvedByUserId: "user-1" } });
+    await poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer(originBinding(), "yes", { text: "yes", by: { id: OWNER }, save() {} });
+    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/comments", "PATCH /issues/iss-1"]);
+  });
+
+  await check("#597: an accept that loses the race to his click keeps his answer and relays", async () => {
+    const b = confirmBoard({ acceptFails: { path: "/accept", after: (routes) => { routes["GET /issues/iss-1/interactions"] = [{ id: "int-1", kind: "request_confirmation", status: "rejected", resolvedByUserId: "user-1" }]; } } });
+    const out = await poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer(originBinding(), "yes", { text: "yes", by: { id: OWNER }, save() {} });
+    assert.strictEqual(out.woke, true);
+  });
+
+  await check("pre-#597: an ask whose record names no confirmation is relayed exactly as before, owner key or not", async () => {
+    const b = confirmBoard({ rec: confirmRecord("k1", { askInteraction: undefined }) });
+    await poller(b, { ownerKey: "owner-key" }).relayOwnerAnswer(originBinding(), "yes", { text: "yes", by: { id: OWNER }, save() {} });
+    assert.deepStrictEqual(b.writes.map((w) => w.key), ["POST /issues/iss-1/comments", "PATCH /issues/iss-1"]);
+    assert.ok(!b.gets.some((g) => g.key === "GET /cli-auth/me"), "the owner key was used for a pre-#597 ask");
+  });
+
+  await check("the owner key is a connector key: withheld from every run, and handed only to the first board's poller", () => {
+    assert.match(bot, /connectorKeys: \[\.\.\.boardKeyEnvs\(process\.env\), \.\.\.escalateBearer\(\), \.\.\.ownerKeyEnv\(\)\],/);
+    assert.match(bot, /ownerKey: board\.id \? null : /);
+  });
+
   await check("section parser and wiring", () => {
     assert.strictEqual(sectionOf(ownerDescription, "Decision"), "Approve the rollout?");
     assert.strictEqual(sectionOf(ownerDescription, "Evidence"), "");

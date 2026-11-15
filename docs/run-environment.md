@@ -72,7 +72,8 @@ A **credential identity** is a variable whose name says it holds a credential
 `CREDENTIALS`, `COOKIE` or `PAT` part, or a Discord or Paperclip key spelled
 without one), a Paperclip connector key named by the board configuration
 (`PAPERCLIP_API_KEY` and every `keyEnv` in `PAPERCLIP_EXTRA_BOARDS`, whatever
-`BOT_SURFACES` turns on), or the seat key. Identities are collected from **every
+`BOT_SURFACES` turns on, plus the variables `PAPERCLIP_ESCALATE_BEARER_ENV` and
+`PAPERCLIP_OWNER_KEY_ENV` name), or the seat key. Identities are collected from **every
 source**: the bot's whole process environment (not the filtered one), the MCP
 servers' env, and the seat. A variable **carries** an identity when it is named
 as one or its value contains the identity's value (at least 6 characters).

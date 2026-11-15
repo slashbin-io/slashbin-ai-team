@@ -273,6 +273,15 @@ function escalateBearer() {
   const name = process.env.PAPERCLIP_ESCALATE_BEARER_ENV;
   return name ? [name] : [];
 }
+// The owner key (first board only): the name of the variable holding a board
+// key that authenticates as the person asks go to. With it, that person's
+// verified Discord yes/no resolves an ask's confirmation on the card as them
+// (slashbin_mcp_services#597); the poller checks the key's user against the
+// ask before it writes. The bridge alone holds it; no run ever sees it.
+function ownerKeyEnv() {
+  const name = process.env.PAPERCLIP_OWNER_KEY_ENV;
+  return name && /^[A-Z][A-Z0-9_]*$/.test(name) ? [name] : [];
+}
 // A run's environment, from the one builder that sees every writer — the
 // bot's environment under BOT_RUN_ENV, the harness's paths, the MCP servers'
 // env and a board task's seat — and decides each variable over the result:
@@ -288,7 +297,7 @@ function runEnvFor(run, { channelId = "", runOutbox = OUTBOX_DIR, tmpDir = null,
     // Every configured board's key, not only the first, listener on or not;
     // and the bridge's own bearer for the escalate action: only the bridge
     // calls it, never a run (SLA-1493).
-    connectorKeys: [...boardKeyEnvs(process.env), ...escalateBearer()],
+    connectorKeys: [...boardKeyEnvs(process.env), ...escalateBearer(), ...ownerKeyEnv()],
     mcpEnv: CODEX_MCP?.env ?? null,
     // Each server's `${VAR}`s expanded into its command line (rule 11).
     mcpRefs: CODEX_MCP?.refs ?? null,
@@ -3743,6 +3752,7 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
       escalationAuthority: escalation.authority,
       // The action serves one board: PAPERCLIP_ESCALATE_BOARD's, else the first.
       escalate,
+      ownerKey: board.id ? null : (ownerKeyEnv().map((n) => process.env[n]).find(Boolean) ?? null),
       contract: board.contract,
       policy: board.policy,
       onEscalate: async ({ task, link, to, ask }) => {

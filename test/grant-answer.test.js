@@ -127,6 +127,13 @@ const held = (w) => w.writes.some((x) => /stopped by someone else/.test(x.body))
     assert.equal(failedNotes(w, "o-1").length, 1);
     assert.equal(failedNotes(w, "o-1")[0].run, "r1");
   });
+  await check("origin wake with the yes on the grant card: the run is still settled, no held note", async () => {
+    const w = world(); w.ctl.failGh = true; w.operator("g-1", "yes");
+    await w.poller.tick(); await w.poller.tick();
+    assert.ok(!held(w));
+    assert.equal(failedNotes(w, "g-1").length, 1);
+    assert.ok(w.writes.some((x) => x.card === "o-1" && x.run === "r1" && /not recorded yet/.test(x.body)), JSON.stringify(w.writes));
+  });
   console.log(`${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

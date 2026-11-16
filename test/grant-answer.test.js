@@ -66,7 +66,7 @@ const held = (w) => w.writes.some((x) => /stopped by someone else/.test(x.body))
     assert.equal(verdictOf("yes, please deliver to prod"), "yes");
     assert.equal(verdictOf("No"), "no");
     assert.equal(verdictOf("wait until Monday"), "unclear");
-    for (const t of ["I cannot approve this", "yes after the fix ships", "yes, staging only", "Is it okay to ship", "don't deliver to prod", "no, do not ship", "yes?", "approve only the docs change"]) assert.notEqual(verdictOf(t), "yes", t);
+    for (const t of ["I cannot approve this", "yes after the fix ships", "yes, staging only", "Is it okay to ship", "don't deliver to prod", "no, do not ship", "yes?", "do you ship to prod", "do you deliver to prod", "ship to prod", "you approve", "deliver", "approve only the docs change"]) assert.notEqual(verdictOf(t), "yes", t);
     for (const t of ["Yes.", "yes, please deliver to prod", "Approved", "go ahead", "ship it"]) assert.equal(verdictOf(t), "yes", t);
     assert.equal(verdictOf("yes but wait for the fix"), "unclear");
     assert.deepEqual(parseGrantTitle(GRANT_TITLE), { origin: "SLA-10", ref: "acme/app#7" });

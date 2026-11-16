@@ -3752,6 +3752,8 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
       escalationAuthority: escalation.authority,
       // The action serves one board: PAPERCLIP_ESCALATE_BOARD's, else the first.
       escalate,
+      // the board operator's yes on a production-grant card records the grant (lib/grant-answer.js); the EM seat only.
+      grant: process.env.PAPERCLIP_GRANT_ANSWERS === "1" ? {} : null,
       ownerKey: board.id ? null : (ownerKeyEnv().map((n) => process.env[n]).find(Boolean) ?? null),
       contract: board.contract,
       policy: board.policy,

@@ -16,6 +16,7 @@ const OPERATOR = "user-operator";
 const GRANT_TITLE = ["R", "ay"].join("") + " decision for SLA-10: production grant for acme/app#7";
 
 function world({ blockedOnGrant = true } = {}) {
+  const ctl = { failGh: false };
   const origin = { id: "o-1", identifier: "SLA-10", title: "Ship it", status: "blocked", assigneeAgentId: "agent-em", assigneeUserId: null, labels: [], createdAt: "2026-01-01T00:00:00Z", createdByUserId: OPERATOR, blockedBy: blockedOnGrant ? [{ id: "g-1" }] : [], requestDepth: 0 };
   const grant = { id: "g-1", identifier: "SLA-11", title: GRANT_TITLE, status: "todo", assigneeUserId: OPERATOR, assigneeAgentId: null, createdAt: "2026-01-02T00:00:00Z" };
   const comments = { "o-1": [], "g-1": [] }, writes = [], gh = [];
@@ -48,6 +49,7 @@ function world({ blockedOnGrant = true } = {}) {
     return ok(card);
   };
   const ghFake = async (args) => {
+    if (ctl.failGh) throw new Error("gh issue edit: HTTP 403 rate limit");
     gh.push(args.join(" "));
     if (args[1] === "view") return JSON.stringify({ comments: gh.filter((a) => a.startsWith("issue comment")).map((a) => ({ body: a })) });
     return "";
@@ -55,7 +57,7 @@ function world({ blockedOnGrant = true } = {}) {
   const poller = createPaperclipPoller({ url: "http://b", apiKey: "k", stateFile: join(mkdtempSync(join(tmpdir(), "grant-")), "s.json"), log: silent, fetch,
     grant: { gh: ghFake, operator: OPERATOR }, answer: async () => "MODEL RAN" });
   const operator = (card, body) => comments[card].push({ id: `operator${comments[card].length}${card}`, body, authorUserId: OPERATOR, authorAgentId: null, createdAt: now() });
-  return { poller, operator, writes, gh };
+  return { poller, operator, writes, gh, ctl };
 }
 const labelled = (w) => w.gh.some((a) => a.startsWith("issue edit 7 -R acme/app --add-label deliver-to-prod"));
 const quoted = (w, text) => w.gh.some((a) => a.startsWith("issue comment 7") && a.includes(`${["R", "ay"].join("")}, verbatim: "${text}"`) && a.includes("SLA-11") && a.includes("CT"));
@@ -103,6 +105,34 @@ const held = (w) => w.writes.some((x) => /stopped by someone else/.test(x.body))
     await w.poller.tick();
     assert.ok(!w.gh.length);
     assert.ok(!w.writes.some((x) => /Recorded your go/.test(x.body)));
+  });
+  const failedNotes = (w, card) => w.writes.filter((x) => x.card === card && /NOT recorded yet/.test(x.body));
+  await check("a failed record posts one note where he wrote, across two polls; a later success records and says so", async () => {
+    const w = world(); w.ctl.failGh = true; w.operator("g-1", "yes");
+    await w.poller.tick(); await w.poller.tick();
+    assert.equal(failedNotes(w, "g-1").length, 1);
+    const n = failedNotes(w, "g-1")[0].body;
+    assert.ok(/rate limit/.test(n) && /every poll/.test(n) && /deliver-to-prod/.test(n) && /acme\/app#7/.test(n) && /<!-- grant-answer-failed:operator0g-1 -->/.test(n), n);
+    assert.ok(!w.gh.length);
+    w.ctl.failGh = false;
+    await w.poller.tick();
+    assert.ok(labelled(w)); assert.ok(quoted(w, "yes"));
+    assert.ok(w.writes.some((x) => x.card === "g-1" && /Recorded your go/.test(x.body)));
+    assert.equal(failedNotes(w, "g-1").length, 1);
+  });
+  await check("origin wake: a failed record posts the note under the run and no held note", async () => {
+    const w = world(); w.ctl.failGh = true; w.operator("o-1", "yes, please deliver to prod");
+    await w.poller.tick(); await w.poller.tick();
+    assert.ok(!held(w));
+    assert.equal(failedNotes(w, "o-1").length, 1);
+    assert.equal(failedNotes(w, "o-1")[0].run, "r1");
+  });
+  await check("origin wake with the yes on the grant card: the run is still settled, no held note", async () => {
+    const w = world(); w.ctl.failGh = true; w.operator("g-1", "yes");
+    await w.poller.tick(); await w.poller.tick();
+    assert.ok(!held(w));
+    assert.equal(failedNotes(w, "g-1").length, 1);
+    assert.ok(w.writes.some((x) => x.card === "o-1" && x.run === "r1" && /not recorded yet/.test(x.body)), JSON.stringify(w.writes));
   });
   console.log(`${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

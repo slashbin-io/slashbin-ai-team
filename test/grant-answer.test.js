@@ -12,12 +12,12 @@ async function check(label, fn) {
   catch (e) { console.log(`  FAIL ${label}\n       ${e.message}`); fail++; }
 }
 const silent = { info() {}, warn() {}, error() {}, child() { return silent; } };
-const RAY = "user-ray";
+const OPERATOR = "user-operator";
 const GRANT_TITLE = ["R", "ay"].join("") + " decision for SLA-10: production grant for acme/app#7";
 
 function world({ blockedOnGrant = true } = {}) {
-  const origin = { id: "o-1", identifier: "SLA-10", title: "Ship it", status: "blocked", assigneeAgentId: "agent-em", assigneeUserId: null, labels: [], createdAt: "2026-01-01T00:00:00Z", createdByUserId: RAY, blockedBy: blockedOnGrant ? [{ id: "g-1" }] : [], requestDepth: 0 };
-  const grant = { id: "g-1", identifier: "SLA-11", title: GRANT_TITLE, status: "todo", assigneeUserId: RAY, assigneeAgentId: null, createdAt: "2026-01-02T00:00:00Z" };
+  const origin = { id: "o-1", identifier: "SLA-10", title: "Ship it", status: "blocked", assigneeAgentId: "agent-em", assigneeUserId: null, labels: [], createdAt: "2026-01-01T00:00:00Z", createdByUserId: OPERATOR, blockedBy: blockedOnGrant ? [{ id: "g-1" }] : [], requestDepth: 0 };
+  const grant = { id: "g-1", identifier: "SLA-11", title: GRANT_TITLE, status: "todo", assigneeUserId: OPERATOR, assigneeAgentId: null, createdAt: "2026-01-02T00:00:00Z" };
   const comments = { "o-1": [], "g-1": [] }, writes = [], gh = [];
   let t = 0; const now = () => new Date(Date.parse("2026-01-03T00:00:00Z") + ++t * 1000).toISOString();
   const ok = (v) => ({ ok: true, text: async () => JSON.stringify(v) });
@@ -53,9 +53,9 @@ function world({ blockedOnGrant = true } = {}) {
     return "";
   };
   const poller = createPaperclipPoller({ url: "http://b", apiKey: "k", stateFile: join(mkdtempSync(join(tmpdir(), "grant-")), "s.json"), log: silent, fetch,
-    grant: { gh: ghFake, ray: RAY }, answer: async () => "MODEL RAN" });
-  const ray = (card, body) => comments[card].push({ id: `ray${comments[card].length}${card}`, body, authorUserId: RAY, authorAgentId: null, createdAt: now() });
-  return { poller, ray, writes, gh };
+    grant: { gh: ghFake, operator: OPERATOR }, answer: async () => "MODEL RAN" });
+  const operator = (card, body) => comments[card].push({ id: `operator${comments[card].length}${card}`, body, authorUserId: OPERATOR, authorAgentId: null, createdAt: now() });
+  return { poller, operator, writes, gh };
 }
 const labelled = (w) => w.gh.some((a) => a.startsWith("issue edit 7 -R acme/app --add-label deliver-to-prod"));
 const quoted = (w, text) => w.gh.some((a) => a.startsWith("issue comment 7") && a.includes(`${["R", "ay"].join("")}, verbatim: "${text}"`) && a.includes("SLA-11") && a.includes("CT"));
@@ -70,26 +70,26 @@ const held = (w) => w.writes.some((x) => /stopped by someone else/.test(x.body))
     assert.deepEqual(parseGrantTitle(GRANT_TITLE), { origin: "SLA-10", ref: "acme/app#7" });
   });
   await check("yes on the origin card: label, quote, no held note", async () => {
-    const w = world(); w.ray("o-1", "yes, please deliver to prod");
+    const w = world(); w.operator("o-1", "yes, please deliver to prod");
     await w.poller.tick();
     assert.ok(labelled(w), w.gh.join("\n")); assert.ok(quoted(w, "yes, please deliver to prod"));
     assert.ok(!held(w));
     assert.ok(w.writes.some((x) => x.card === "o-1" && x.run === "r1" && /Recorded your go/.test(x.body)));
   });
   await check("yes on the grant card: same", async () => {
-    const w = world(); w.ray("g-1", "Yes");
+    const w = world(); w.operator("g-1", "Yes");
     await w.poller.tick();
     assert.ok(labelled(w)); assert.ok(quoted(w, "Yes")); assert.ok(!held(w));
   });
   await check("the same yes is recorded once across polls", async () => {
-    const w = world(); w.ray("g-1", "yes");
+    const w = world(); w.operator("g-1", "yes");
     await w.poller.tick(); await w.poller.tick();
     assert.equal(w.gh.filter((a) => a.startsWith("issue edit")).length, 1);
     assert.equal(w.gh.filter((a) => a.startsWith("issue comment")).length, 1);
   });
   for (const word of ["no", "wait", "yes but wait for the fix"]) {
     await check(`"${word}" on either card: no label, one yes/no ask each`, async () => {
-      const w = world(); w.ray("o-1", word); w.ray("g-1", word);
+      const w = world(); w.operator("o-1", word); w.operator("g-1", word);
       await w.poller.tick(); await w.poller.tick();
       assert.ok(!w.gh.length, w.gh.join("\n"));
       assert.equal(w.writes.filter((x) => /yes or no/.test(x.body) && x.card === "o-1").length, 2);
@@ -97,7 +97,7 @@ const held = (w) => w.writes.some((x) => /stopped by someone else/.test(x.body))
     });
   }
   await check("a comment on a blocked card with no grant blocker: as before", async () => {
-    const w = world({ blockedOnGrant: false }); w.ray("o-1", "yes, please deliver to prod");
+    const w = world({ blockedOnGrant: false }); w.operator("o-1", "yes, please deliver to prod");
     await w.poller.tick();
     assert.ok(!w.gh.length);
     assert.ok(!w.writes.some((x) => /Recorded your go/.test(x.body)));

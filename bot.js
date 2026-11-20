@@ -15,7 +15,7 @@ const { buildRunEnv, resolvePermissionMode, VALID_MODES, attachmentReadRule, sum
 const { resolveConfine, confineCommand, confineProblems, readWithin, within: pathWithin, real: realPath } = require("./lib/confine");
 const privateChannels = require("./lib/private-channels");
 const { isNothingToReport } = require("./lib/nothing-to-report");
-const { isNonReply, nonReplyCorrection } = require("./lib/non-reply");
+const { isNonReply, isSyntheticMessage, nonReplyCorrection } = require("./lib/non-reply");
 const { isWakeJob, buildWakePrompt } = require("./lib/wake");
 const { signalRefusal, normalizeSignal, tokenMatches: bridgeTokenMatches } = require("./lib/bridge-signal");
 const { createOwnerAsks, announceAsk, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
@@ -2839,6 +2839,12 @@ function handleStreamEvent(event, reqLog, sendMessage, state) {
       break;
 
     case "assistant":
+      // Claude Code's own filler on a resumed, killed turn is not the answer
+      // (lib/non-reply.js isSyntheticMessage).
+      if (isSyntheticMessage(event.message)) {
+        reqLog.info("Dropped a synthetic assistant message from the reply");
+        break;
+      }
       if (event.message?.content) {
         for (const block of event.message.content) {
           if (block.type === "text") {

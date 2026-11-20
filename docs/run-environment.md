@@ -129,7 +129,10 @@ Evaluated over the final environment, for each variable:
    `constructor` and `prototype`, **refuse** the configuration: a prefix would
    select variables its operator never saw. Unset, everything is inherited,
    as before. A credential under a basic's prefix (`XDG_API_KEY`) is not a
-   basic, so it is withheld unless listed.
+   basic, so it is withheld unless listed. `NODE_ENV` configures the
+   harness's own process and is **withheld** from every run, listed or not:
+   under `production` npm would omit devDependencies in every project a run
+   installs.
 2. A **Discord** identity is **withheld** from every board and parity run,
    whoever writes it — the server channel included.
 3. A **Paperclip** identity is **withheld** from every board and parity run,

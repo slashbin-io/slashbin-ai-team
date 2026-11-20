@@ -752,6 +752,15 @@ check("unset passes the whole environment on, as before, and withholds nothing e
   }
 });
 
+check("the harness's own NODE_ENV reaches no run, listed or not", () => {
+  const env = { PATH: "/bin", NODE_ENV: "production" };
+  for (const spec of [undefined, "NODE_ENV", "NOVA_BEARER"]) {
+    const p = underList({ ...env, NOVA_BEARER: "nova-bearer-value" }, spec);
+    assert.ok(!("NODE_ENV" in p.inherit), `NODE_ENV reached a run under ${spec}`);
+    assert.strictEqual(p.inherit.PATH, "/bin");
+  }
+});
+
 check("named keeps the basics, the names and the harness policy, and no unlisted credential", () => {
   const env = { PATH: "/bin", HOME: "/h", LC_ALL: "C", XDG_RUNTIME_DIR: "/r", NOVA_BEARER: "nova-bearer-value", NOVA_OTHER: "o", ...POLICY, ...CREDS };
   const run = inherited(env, "NOVA_BEARER");

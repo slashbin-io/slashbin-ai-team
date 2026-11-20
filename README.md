@@ -416,7 +416,7 @@ For a bot that serves people who must not see each other's work. Both are off un
 | Variable | Default | Description |
 |---|---|---|
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `NODE_ENV` | — | `production` disables pretty logging |
+| `NODE_ENV` | — | `production` disables pretty logging. The harness's own; no run inherits it |
 | `MAX_DISCORD_LENGTH` | `1900` | Chars per message before splitting |
 | `BOT_BOT_EXCHANGE_PRUNE_MS` | `600000` | How often bot-exchange counters reset |
 | `BOT_TYPING_INTERVAL_MS` | `8000` | How often the typing indicator refreshes |

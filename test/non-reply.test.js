@@ -3,7 +3,7 @@
 // reply that merely mentions the phrase would swallow an answer.
 
 const assert = require("assert");
-const { isNonReply, nonReplyCorrection } = require("../lib/non-reply");
+const { isNonReply, isSyntheticMessage, nonReplyCorrection } = require("../lib/non-reply");
 
 let failures = 0;
 function check(name, fn) {
@@ -34,6 +34,9 @@ const KEEP = [
 console.log("non-reply:");
 for (const t of CATCH) check(`catches ${JSON.stringify(t)}`, () => assert.strictEqual(isNonReply(t), true));
 for (const t of KEEP) check(`keeps ${JSON.stringify(t)}`, () => assert.strictEqual(isNonReply(t), false));
+check("a synthetic message is recognised", () => assert.strictEqual(isSyntheticMessage({ model: "<synthetic>" }), true));
+check("a model message is not synthetic", () => assert.strictEqual(isSyntheticMessage({ model: "claude-x" }), false));
+check("a missing message is not synthetic", () => assert.strictEqual(isSyntheticMessage(undefined), false));
 check("correction quotes the skipped message", () => {
   const p = nonReplyCorrection("xrgarcia", "yes proceed");
   assert.ok(p.includes("yes proceed") && p.includes("xrgarcia") && p.includes("Answer that message now"));

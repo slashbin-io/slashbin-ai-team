@@ -29,13 +29,14 @@ function extractFn(name) {
 }
 
 const handlerSrc = extractFn("handleStreamEvent");
+const { isSyntheticMessage } = require("../lib/non-reply");
 const silentLog = { info() {}, debug() {}, warn() {}, error() {} };
 
 function run(flag, events, { finalTextOnly } = {}) {
   const handle = new Function(
-    "REPLY_FINAL_TEXT_ONLY", "ATTACH_RE",
+    "REPLY_FINAL_TEXT_ONLY", "ATTACH_RE", "isSyntheticMessage",
     `${handlerSrc}; return handleStreamEvent;`
-  )(flag, /\.(csv|pdf)$/i);
+  )(flag, /\.(csv|pdf)$/i, isSyntheticMessage);
   let turnText = "";
   const state = {
     getTurnText: () => turnText,
@@ -58,6 +59,16 @@ const leaked = [
   tool("Grep"),
   text("Alex, there are 11 items in flight."),
 ];
+
+// 0. A resumed, killed run: Claude Code's synthetic "No response requested."
+//    precedes the real answer. It must never join the reply, flag on or off.
+for (const flag of [true, false]) {
+  const r = run(flag, [
+    { type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] } },
+    text("Real answer."),
+  ]);
+  assert.strictEqual(r.turnText, "Real answer.");
+}
 
 // 1. Flag on: only the text after the last tool call survives.
 {

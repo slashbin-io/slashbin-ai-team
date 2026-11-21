@@ -87,6 +87,16 @@ async function post(registry, n, id) {
     assert.ok(r.open(CH).length === 2);
   });
 
+  await check("a bare yes with 115 open asks gets a reply Discord accepts (under 2000 chars) naming the newest", async () => {
+    const r = fresh(); for (let i = 1; i <= 115; i++) await post(r, i, `m-${i}`);
+    const route = routeReply({ registry: r, channelId: CH, text: "yes", referenceId: null, userId: OWNER });
+    assert.strictEqual(route.kind, "which");
+    const text = whichMessage(route.open);
+    assert.ok(text.length <= 2000, `which message is ${text.length} chars`);
+    assert.match(text, /Approve change 115\?/); assert.match(text, /110 older/);
+    assert.doesNotMatch(text, /Approve change 1\?/);
+  });
+
   await check("a bare yes with nothing open, or in another channel, is left to the model", async () => {
     const r = fresh(); await post(r, 1, "m-1");
     assert.strictEqual(routeReply({ registry: r, channelId: "2234567890123456", text: "yes", userId: OWNER }).kind, "none");

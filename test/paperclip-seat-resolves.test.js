@@ -107,7 +107,7 @@ function board({ description = "Ship the release.", by = { createdByAgentId: "ag
     // The board's checkout of a wake: a blocked card the bot holds is in progress for the run.
     if (card.status === "blocked" && card.assigneeAgentId === "agent-em") { card.status = "in_progress"; card.blockedTransitionAt = null; }
   };
-  return { card, writes, comments, fetch, wake, runs, record, owners, now, fixture };
+  return { card, writes, comments, fetch, wake, runs, record, owners, now, fixture, reportsTo };
 }
 /** An owner's card as an ask opens it. */
 function ownerCard(n) {
@@ -235,7 +235,11 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
         b.card.status = "blocked";
         // As the real action: the owner's card is added to the card's blockers.
         b.card.blockedBy = [...(b.card.blockedBy ?? []), { id: "own-1", identifier: "R-1", status: "todo" }];
-      } else if (body.operation === "hand_up") { b.card.assigneeAgentId = "agent-po"; b.card.status = "blocked"; }
+      } else if (body.operation === "hand_up") {
+        // A router with no terminal (jerky.com), as the live action: a seat with no manager has no one above it (top_of_chain).
+        if (!b.reportsTo || r.noTerminal) return { ok: false, code: "top_of_chain", message: "no one above" };
+        b.card.assigneeAgentId = "agent-po"; b.card.status = "blocked";
+      }
       // As the live action before #597: it reads the person's card only, and he answered on this one.
       else if (body.operation === "record_answer") return { ok: false, code: "no_ray_answer", message: "The person has not commented on their card yet." };
       return { ok: true, operation: body.operation, holder: { id: "agent-po" }, hops: [] };
@@ -454,7 +458,8 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
       const stateFile = join(mkdtempSync(join(tmpdir(), "pc-")), "s.json");
       const prompts = [];
       const answer = async (p) => { prompts.push(p); return STUCK; };
-      // No reporting line: nowhere to hand up to.
+      // No reporting line, and a router with no terminal: nowhere to hand up to.
+      r.noTerminal = true;
       const b = path === "held" ? heldBoard() : board({ by: { createdByAgentId: "agent-em" } });
       r.board = b;
       const noLine = async (url, init) => {
@@ -599,6 +604,8 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
       r.calls.push(body);
       const b = r.board;
       const replay = hops.find((h) => h.idempotencyKey === body.idempotencyKey && h.operation === body.operation);
+      // A router with no terminal: a seat with no manager has no one above it.
+      if (body.operation === "hand_up" && !b.reportsTo) return { ok: false, code: "top_of_chain", message: "no one above" };
       if (replay) return { ok: true, operation: body.operation, replayed: true, holder: { id: "agent-em" }, hops };
       if (body.operation === "hand_up") {
         hops.push({ from: "agent-em", to: "agent-po", operation: "hand_up", idempotencyKey: body.idempotencyKey });
@@ -862,6 +869,8 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
     const log = { ...silent, warn: (o, m) => warns.push(`${m ?? o}`), child() { return log; } };
     // As the real action on success: a record_answer hop joins the record on the card, and the card is released to the seat.
     const escalate = async (body) => {
+      // A router with no terminal: a seat with no manager has no one above it, so the stuck reply is not handed up.
+      if (body.operation === "hand_up") return { ok: false, code: "top_of_chain", message: "no one above" };
       calls.push(body);
       if (record_answer.ok) {
         const answered = { from: "agent-em", to: "agent-em", operation: "record_answer", idempotencyKey: body.idempotencyKey, at: b.now() };

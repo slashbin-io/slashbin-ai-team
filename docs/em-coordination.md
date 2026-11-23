@@ -93,8 +93,8 @@ No line means `done`.
 
 A hand-up is a record on the card (`process.escalate`), never a chat message. Labels that
 route a card to a ruling seat (`ESCALATION_LABELS`, plus `PAPERCLIP_ESCALATION_LABELS`):
-`Needs EM ruling` is the default. A card labelled for another seat (for example
-`Needs Nova ruling`) is that seat's: do not rule on it. A reserved decision becomes one linked
+`Needs EM ruling` is the default. A card labelled for another seat is that seat's: do not rule on it. The end of the chain is
+where the router's `escalation_policy` says (`chain.terminal`), never an env value. A reserved decision becomes one linked
 To Do card for the owner (`request_ray_action`); the origin card stays blocked. The owner's
 answer counts only from the owner's own login (`record_answer`).
 

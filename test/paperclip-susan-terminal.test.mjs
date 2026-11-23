@@ -70,7 +70,7 @@ const NOVA_ENV = parseEscalateTo("agent:Nova");
 
   await check("a failed read, a board_operator terminal, a null one and no client are all null; nothing throws", async () => {
     assert.strictEqual(await escalationTerminal(client({ fails: true, terminal: SUSAN, tools: [] })), null);
-    assert.strictEqual(await escalationTerminal(client({ terminal: { kind: "board_operator", userId: "ray" }, tools: [] })), null);
+    assert.strictEqual(await escalationTerminal(client({ terminal: { kind: "board_operator", userId: "op1" }, tools: [] })), null);
     assert.strictEqual(await escalationTerminal(client({ terminal: null, tools: [] })), null);
     assert.strictEqual(await escalationTerminal(null), null);
   });
@@ -89,7 +89,7 @@ const NOVA_ENV = parseEscalateTo("agent:Nova");
   });
 
   await check("a failed read or a board_operator terminal opens no card: Discord only, no env fallback", async () => {
-    for (const st of [{ fails: true, terminal: SUSAN, tools: [] }, { terminal: { kind: "board_operator", userId: "ray" }, tools: [] }]) {
+    for (const st of [{ fails: true, terminal: SUSAN, tools: [] }, { terminal: { kind: "board_operator", userId: "op1" }, tools: [] }]) {
       const b = stalledBoard({ escalate: client(st), escalateTo: NOVA_ENV });
       await b.tick();
       assert.strictEqual(b.s.created.length, 0);

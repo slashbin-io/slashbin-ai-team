@@ -236,7 +236,7 @@ async function blockedLater(actor, { opts = {}, mutate = () => {}, reply = STUCK
         // As the real action: the owner's card is added to the card's blockers.
         b.card.blockedBy = [...(b.card.blockedBy ?? []), { id: "own-1", identifier: "R-1", status: "todo" }];
       } else if (body.operation === "hand_up") {
-        // A router with no terminal (jerky.com), as the live action: a seat with no manager has no one above it (top_of_chain).
+        // A router with no terminal, as the live action: a seat with no manager has no one above it (top_of_chain).
         if (!b.reportsTo || r.noTerminal) return { ok: false, code: "top_of_chain", message: "no one above" };
         b.card.assigneeAgentId = "agent-po"; b.card.status = "blocked";
       }

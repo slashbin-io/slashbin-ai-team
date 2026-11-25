@@ -317,6 +317,18 @@ async function post(registry, n, id) {
     assert.ok(!b.gets.includes("GET /issues/own-1"), "a person's card was read");
   });
 
+  await check("an ask naming a confirmation links to that decision on the card; one with none links to the card", async () => {
+    const rec = { ...originRecord("k1"), askInteraction: "int-1" };
+    const body = `<!-- process.escalate:${Buffer.from(JSON.stringify(rec)).toString("base64url")} -->\n\n**Decision**\n> Approve the rollout?`;
+    const withIt = board({ "GET /issues/iss-1/comments": [{ id: "c1", authorAgentId: ME.id, body, createdAt: "2026-10-21T00:00:00Z" }], "GET /issues/iss-1/interactions": [{ id: "int-1", kind: "request_confirmation", status: "pending" }] });
+    const seen = [];
+    await poller(withIt, { onOwnerAsk: async (a) => { seen.push(a); return true; } }).tick();
+    assert.strictEqual(seen[0].link, "https://board.example.com/T/issues/T-1#interaction-int-1");
+    const none = originBoard("k2"); const seen2 = [];
+    await poller(none, { onOwnerAsk: async (a) => { seen2.push(a); return true; } }).tick();
+    assert.strictEqual(seen2[0].link, "https://board.example.com/T/issues/T-1");
+  });
+
   await check("an origin-bound ask is not announced once the card is done, or when a later hop moved on", async () => {
     const seen = [];
     await poller(board({ ...originBoard("k1").routes, "GET /issues/iss-1": { id: "iss-1", identifier: "T-1", assigneeAgentId: ME.id, status: "done" } }), { onOwnerAsk: async (a) => { seen.push(a); return true; } }).tick();

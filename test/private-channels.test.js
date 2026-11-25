@@ -2,7 +2,7 @@
  * Private channels (lib/private-channels.js): what one channel says, uploads or
  * schedules is given to that channel's runs and to no other's.
  */
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, lstatSync } = require("fs");
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, lstatSync, existsSync } = require("fs");
 const { join } = require("path");
 const os = require("os");
 const assert = require("assert");
@@ -55,8 +55,27 @@ check("a failed read (no rows) keeps the old job-history view", () => {
   assert.deepStrictEqual(readFileSync(p.jobHistory, "utf8").trim().split("\n").map((l) => JSON.parse(l).id), ["a"]);
 });
 
-check("the bot rebuilds the view from listRuns and logs, without throwing, when it fails", () => {
-  assert.ok(/jobRows: await jobRuns\.listRuns\(/.test(bot) && /job history view not refreshed/.test(bot));
+check("a failed read replaces the view with a marker naming why; the next good read clears it", () => {
+  const state = tmp(), hist = tmp();
+  const p = pc.writeView({ stateDir: state, key: "111", historyDir: hist, sessions: {}, jobRows: [{ id: "a", channel: "111" }] });
+  const marker = pc.jobUnavailableFile(p.jobHistory);
+  pc.writeView({ stateDir: state, key: "111", historyDir: hist, sessions: {}, jobRows: null, jobError: "record unreachable" });
+  assert.ok(!existsSync(p.jobHistory));
+  assert.strictEqual(readFileSync(marker, "utf8").trim(), "record unreachable");
+  pc.writeView({ stateDir: state, key: "111", historyDir: hist, sessions: {}, jobRows: [{ id: "b", channel: "111" }] });
+  assert.ok(!existsSync(marker));
+  pc.writeJobView(state, null, "down");
+  assert.strictEqual(readFileSync(pc.jobUnavailableFile(pc.jobViewFile(state)), "utf8").trim(), "down");
+});
+
+check("the bot rebuilds the view from listRuns and passes a failure on, without throwing", () => {
+  assert.ok(/jobRows: await jobRuns\.listRuns\(/.test(bot) && /jobHistoryError: e\.message/.test(bot) && /jobError/.test(bot));
+});
+
+check("both skill readers say history is unavailable, never empty, when the marker is there", () => {
+  for (const f of ["skill-pack/bin/schedule.mjs", "skill-pack/bin/recall.mjs"]) {
+    assert.ok(readFileSync(join(__dirname, "..", f), "utf8").includes("job-history.unavailable"), f);
+  }
 });
 
 check("a fresh session's context gets only its channel's summaries", () => {

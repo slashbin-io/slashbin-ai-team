@@ -2309,7 +2309,7 @@ function isSafeToRetryFresh(err) {
  */
 async function runClaude(prompt, channelId, reqLog, sendMessage, attachments = {}, channelName = "unknown", progress = null, opts = {}) {
   try { opts = { ...opts, jobRows: await jobRuns.listRuns({ limit: 500 }) }; }
-  catch (e) { log.warn(`job history view not refreshed: ${e.message}`); }
+  catch (e) { opts = { ...opts, jobHistoryError: e.message }; log.warn(`job history unavailable: ${e.message}`); }
   if (opts.ephemeral) {
     return spawnClaude(prompt, channelId, reqLog, sendMessage, attachments, channelName, null, progress, opts);
   }
@@ -2489,12 +2489,13 @@ function spawnClaude(prompt, channelId, reqLog, sendMessage, attachments, channe
     const seatRun = opts.paperclipRun;
     // The job-history view is a derived cache: the record lives in the company record's job_runs
     // table (lib/job-runs.js) and the file skill scripts read is rebuilt from it on every run.
-    // If the read fails nothing is written, the old view stays, and one line is logged.
+    // If the read fails the view is replaced by a marker naming why, so skills say "unavailable", not "empty".
     const jobRows = opts.jobRows ?? null; // read by runClaude, which is async
+    const jobError = opts.jobHistoryError ?? null;
     if (PRIVATE_CHANNELS) {
-      privateChannels.writeView({ stateDir: STATE_DIR, key: memScope, historyDir: HISTORY_DIR, sessions: Object.fromEntries(channelSessions), jobRows, groups: CHANNEL_GROUPS });
+      privateChannels.writeView({ stateDir: STATE_DIR, key: memScope, historyDir: HISTORY_DIR, sessions: Object.fromEntries(channelSessions), jobRows, jobError, groups: CHANNEL_GROUPS });
     } else {
-      try { privateChannels.writeJobView(STATE_DIR, jobRows); } catch (e) { log.warn(`job history view not written: ${e.message}`); }
+      try { privateChannels.writeJobView(STATE_DIR, jobRows, jobError); } catch (e) { log.warn(`job history view not written: ${e.message}`); }
     }
     const built = runEnvFor(!opts.noBufferContext ? "session" : (narrowBoard ? "board" : "parity"), {
       channelId, runOutbox, tmpDir: boardTmp, memory,

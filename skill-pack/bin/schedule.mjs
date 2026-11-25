@@ -306,6 +306,8 @@ if (cmd === "list") {
   save(rest);
   console.log(`Removed **${id}**. ${rest.length} job(s) remain.`);
 } else if (cmd === "history") {
+  const gone = HISTORY && join(dirname(HISTORY), "job-history.unavailable");
+  if (gone && existsSync(gone)) die(`Run history is unavailable: ${readFileSync(gone, "utf8").trim()}`);
   if (!HISTORY || !existsSync(HISTORY)) { console.log("No run history yet."); process.exit(0); }
   const want = argv[1];
   const rows = readFileSync(HISTORY, "utf8").split("\n").filter(Boolean)

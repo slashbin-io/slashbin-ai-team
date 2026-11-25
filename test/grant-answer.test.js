@@ -139,7 +139,7 @@ const held = (w) => w.writes.some((x) => /stopped by someone else/.test(x.body))
   });
   await check("an open grant card is announced once; with a pending confirmation the link is to that decision, without one to the card", async () => {
     const sent = [];
-    const w = world({ interactions: [{ id: "i-1", kind: "request_confirmation", status: "pending" }], onGrantAsks: async (cards) => { sent.push(cards); return true; } });
+    const w = world({ interactions: [{ id: "i-1", kind: "request_confirmation", idempotencyKey: "grant-confirm:g-1", status: "pending" }], onGrantAsks: async (cards) => { sent.push(cards); return true; } });
     await w.poller.tick(); await w.poller.tick();
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].map((c) => [c.cardIdentifier, c.what]), [["SLA-11", "production grant for acme/app#7"]]);

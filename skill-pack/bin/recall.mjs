@@ -19,7 +19,7 @@
  * Usage: node recall.mjs "<query>"
  */
 import { readFileSync, readdirSync, existsSync, statSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 
 const query = process.argv.slice(2).join(" ").trim();
 if (!query) {
@@ -180,8 +180,11 @@ else {
 }
 
 // --------------------------------------------------------------- job history
-const jobFile = process.env.BOT_JOB_HISTORY_FILE;
-if (!jobFile) note("jobs", "UNAVAILABLE", "BOT_JOB_HISTORY_FILE is not set");
+// A cache the bot rebuilds from the company record before every run (newest first).
+const jobFile = process.env.BOT_STATE_DIR ? join(process.env.BOT_STATE_DIR, "view", "job-history.jsonl") : null;
+const jobGone = jobFile && join(dirname(jobFile), "job-history.unavailable");
+if (!jobFile) note("jobs", "UNAVAILABLE", "BOT_STATE_DIR is not set");
+else if (existsSync(jobGone)) note("jobs", "UNAVAILABLE", `job history could not be read: ${readFileSync(jobGone, "utf8").trim()}`);
 else if (!existsSync(jobFile)) note("jobs", "EMPTY", "no scheduled runs yet");
 else {
   try {
@@ -191,7 +194,7 @@ else {
     if (!hits.length) note("jobs", "NO MATCH", `${rows.length} run(s) searched`);
     else {
       note("jobs", "OK", `${hits.length} of ${rows.length} run(s) match`);
-      emit("### scheduled runs\n" + hits.slice(-8).map((r) =>
+      emit("### scheduled runs\n" + hits.slice(0, 8).reverse().map((r) =>
         `- ${r.id} fired ${r.firedAt} — ${r.success ? "ok" : `FAILED: ${r.error || "unknown"}`}`
       ).join("\n") + "\n");
     }

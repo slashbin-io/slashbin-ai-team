@@ -25,7 +25,6 @@ The harness publishes its **resolved** paths into the environment of every run:
 | `BOT_OUTBOX_DIR` | write here and it is attached to the reply |
 | `BOT_BUFFER_FILE` | rolling conversation buffer |
 | `BOT_SESSIONS_FILE` | per-channel session map |
-| `BOT_JOB_HISTORY_FILE` | scheduled job runs |
 | `BOT_SCHEDULES_FILE` | the jobs themselves — write here to schedule one |
 | `BOT_CHANNEL_ID` | the channel this run is answering in |
 

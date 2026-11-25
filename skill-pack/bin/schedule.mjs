@@ -22,10 +22,11 @@
  *   schedule.mjs history [id]
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { dirname, join } from "path";
 
 const SCHEDULES = process.env.BOT_SCHEDULES_FILE;
-const HISTORY = process.env.BOT_JOB_HISTORY_FILE;
+// A cache the bot rebuilds from the company record before every run.
+const HISTORY = process.env.BOT_STATE_DIR ? join(process.env.BOT_STATE_DIR, "view", "job-history.jsonl") : undefined;
 const TZ = process.env.BOT_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const MAX_JOBS = Number.parseInt(process.env.BOT_MAX_SCHEDULED_JOBS, 10) > 0
   ? Number.parseInt(process.env.BOT_MAX_SCHEDULED_JOBS, 10) : 25;
@@ -305,11 +306,13 @@ if (cmd === "list") {
   save(rest);
   console.log(`Removed **${id}**. ${rest.length} job(s) remain.`);
 } else if (cmd === "history") {
+  const gone = HISTORY && join(dirname(HISTORY), "job-history.unavailable");
+  if (gone && existsSync(gone)) die(`Run history is unavailable: ${readFileSync(gone, "utf8").trim()}`);
   if (!HISTORY || !existsSync(HISTORY)) { console.log("No run history yet."); process.exit(0); }
   const want = argv[1];
   const rows = readFileSync(HISTORY, "utf8").split("\n").filter(Boolean)
     .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
-    .filter((r) => !want || r.id === want);
+    .filter((r) => !want || r.id === want).reverse();
   if (!rows.length) { console.log(want ? `No runs recorded for ${want}.` : "No runs recorded yet."); process.exit(0); }
   console.log(`${rows.length} run(s):\n`);
   for (const r of rows.slice(-20)) {

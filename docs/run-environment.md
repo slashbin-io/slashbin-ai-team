@@ -32,7 +32,7 @@ In the order they write; a later writer wins on the same name.
 | # | Writer | Applies to |
 |---|---|---|
 | 1 | **Inherit** — the bot's process environment, filtered by `BOT_RUN_ENV` | every run |
-| 2 | **Harness** — the resolved paths (`BOT_STATE_DIR`, `BOT_SUMMARIES_DIR`, `BOT_ATTACHMENTS_DIR`, `BOT_OUTBOX_DIR`, `BOT_BUFFER_FILE`, `BOT_SESSIONS_FILE`, `BOT_JOB_HISTORY_FILE`, `BOT_SCHEDULES_FILE`, `BOT_CHANNEL_ID`), `CLAUDE_PLUGIN_ROOT` (Codex), and the run-kind flags (`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` on a narrow board or restricted run; `CLAUDE_CODE_DISABLE_AUTO_MEMORY` and the private `TMPDIR` on a narrow board run) | every run |
+| 2 | **Harness** — the resolved paths (`BOT_STATE_DIR`, `BOT_SUMMARIES_DIR`, `BOT_ATTACHMENTS_DIR`, `BOT_OUTBOX_DIR`, `BOT_BUFFER_FILE`, `BOT_SESSIONS_FILE`, `BOT_SCHEDULES_FILE`, `BOT_CHANNEL_ID`), `CLAUDE_PLUGIN_ROOT` (Codex), and the run-kind flags (`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` on a narrow board or restricted run; `CLAUDE_CODE_DISABLE_AUTO_MEMORY` and the private `TMPDIR` on a narrow board run) | every run |
 | 3 | **Server channel** — the MCP servers' env (`MCP_CONFIG`, `MCP_CONFIG_EXTRA`, the repo's `.mcp.json`, read once at startup with `${VAR}` expanded against the bot's whole environment and inline values as written; the `${VAR}`s a server's command line expands are checked under rule 11), and the seat key `PAPERCLIP_RUN_AGENT_KEY` with `PAPERCLIP_RUN_ID` for a board task | Codex in `bypass`, session or parity run only |
 | 4 | **Nesting** — `CLAUDECODE`, `CLAUDE_AGENT_SDK_VERSION`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` removed | every run |
 

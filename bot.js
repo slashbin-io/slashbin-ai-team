@@ -18,7 +18,7 @@ const { isNothingToReport } = require("./lib/nothing-to-report");
 const { isNonReply, isSyntheticMessage, nonReplyCorrection } = require("./lib/non-reply");
 const { isWakeJob, buildWakePrompt } = require("./lib/wake");
 const { signalRefusal, normalizeSignal, tokenMatches: bridgeTokenMatches } = require("./lib/bridge-signal");
-const { createOwnerAsks, announceAsk, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
+const { createOwnerAsks, announceAsk, announceGrantAsks, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
 const { parseRunnerRefusal, detectRefusal, DEFAULT_RULES: RUNNER_REFUSAL_DEFAULTS } = require("./lib/refusal");
 const { parseRoutineRunner, createRoutineRunner } = require("./lib/routine-runner");
 const { parseAlertConfig, isAlert, createAlertQueue } = require("./lib/alert-runner");
@@ -3790,6 +3790,17 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
           send: (content) => channel.send({ content: `${escalation.mention ? `${escalation.mention} ` : ""}${content}`, allowedMentions: { parse: ["users"] } }) });
         if (posted) pLog.info({ paperclipTask: ask.cardIdentifier, channelId, messageId: binding.discordMessageId }, "Paperclip ask to a person — announced on Discord");
         return Boolean(binding.discordMessageId);
+      } : null,
+      // The operator's production-grant cards are his own, so no ask above reaches them: every open one is
+      // said on Discord once, all of a poll's in one message (lib/owner-asks.js announceGrantAsks).
+      onGrantAsks: OWNER_ASKS ? async (cards) => {
+        const channelId = escalation.channel ?? promptChannel;
+        const channel = await resolveBridgeChannel(channelId, { paperclipTask: cards[0]?.cardIdentifier, ownerAsk: true });
+        if (!channel) return false;
+        const ok = await announceGrantAsks({ registry: OWNER_ASKS, cards, board: board.id ?? null, channelId,
+          send: (content) => channel.send({ content: `${escalation.mention ? `${escalation.mention} ` : ""}${content}`, allowedMentions: { parse: ["users"] } }) });
+        if (ok) pLog.info({ cards: cards.map((c) => c.cardIdentifier), channelId }, "Production grant cards — announced on Discord");
+        return ok;
       } : null,
       // A seat the board stops starting runs for is said on Discord, once per
       // stretch: polls keep succeeding, so nothing else would (slashbin-ai-team#128).

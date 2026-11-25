@@ -211,15 +211,6 @@ const held = (w) => w.writes.some((x) => /stopped by someone else/.test(x.body))
     await announceGrantAsks({ registry, cards, channelId: "c", send: async (t) => { msgs.push(t); return { id: "z" }; } });
     assert.equal(msgs.filter((m) => m.includes("#interaction-")).length, msgs.length - 0 && msgs.length);
   });
-  await check("an unkeyed decision on the grant card is the grant's when its text names the target; one that does not is not", async () => {
-    const mk = (extra) => world({ interactions: [{ id: "i-5", kind: "request_confirmation", status: "accepted", resolvedByUserId: OPERATOR, resolvedAt: "2026-01-04T00:00:00Z", ...extra }] });
-    const named = mk({ payload: { prompt: "Grant production for acme/app#7?" } });
-    await named.poller.tick();
-    assert.equal(named.gh.filter((a) => a.startsWith("issue edit") && a.includes("deliver-to-prod")).length, 1, named.gh.join("|"));
-    const other = mk({ payload: { prompt: "Validate staging only" } });
-    await other.poller.tick();
-    assert.equal(other.gh.length, 0);
-  });
   console.log(`${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

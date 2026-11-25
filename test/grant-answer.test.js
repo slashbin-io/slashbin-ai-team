@@ -149,14 +149,14 @@ const held = (w) => w.writes.some((x) => /stopped by someone else/.test(x.body))
     assert.equal(bare[0][0].link, "http://b/SLA/issues/SLA-11");
   });
   await check("his Confirm on the decision records the grant once; his Decline records none and says so", async () => {
-    const yes = world({ interactions: [{ id: "i-1", kind: "request_confirmation", status: "accepted", resolvedByUserId: OPERATOR, resolvedAt: "2026-01-04T00:00:00Z" }] });
+    const yes = world({ interactions: [{ id: "i-1", kind: "request_confirmation", idempotencyKey: "grant-confirm:g-1", status: "accepted", resolvedByUserId: OPERATOR, resolvedAt: "2026-01-04T00:00:00Z" }] });
     await yes.poller.tick(); await yes.poller.tick();
     assert.equal(yes.gh.filter((a) => a.startsWith("issue edit") && a.includes("deliver-to-prod")).length, 1, yes.gh.join("|"));
     assert.ok(yes.gh.some((a) => a.includes("grant-answer:i-1")));
-    const other = world({ interactions: [{ id: "i-2", kind: "request_confirmation", status: "accepted", resolvedByUserId: "someone-else", resolvedAt: "2026-01-04T00:00:00Z" }] });
+    const other = world({ interactions: [{ id: "i-2", kind: "request_confirmation", idempotencyKey: "grant-confirm:g-1", status: "accepted", resolvedByUserId: "someone-else", resolvedAt: "2026-01-04T00:00:00Z" }] });
     await other.poller.tick();
     assert.equal(other.gh.length, 0);
-    const no = world({ interactions: [{ id: "i-3", kind: "request_confirmation", status: "rejected", resolvedByUserId: OPERATOR, resolvedAt: "2026-01-04T00:00:00Z" }] });
+    const no = world({ interactions: [{ id: "i-3", kind: "request_confirmation", idempotencyKey: "grant-confirm:g-1", status: "rejected", resolvedByUserId: OPERATOR, resolvedAt: "2026-01-04T00:00:00Z" }] });
     await no.poller.tick(); await no.poller.tick();
     assert.equal(no.gh.length, 0);
     assert.equal(no.writes.filter((x) => x.card === "g-1" && /Recorded your decline/.test(x.body)).length, 1, JSON.stringify(no.writes));
@@ -191,6 +191,25 @@ const held = (w) => w.writes.some((x) => /stopped by someone else/.test(x.body))
     assert.equal(msgs.length, 2);
     assert.equal(routeReply({ registry, channelId: "c", text: "yes", referenceId: "m2", userId: "u1" }).kind, "none");
     assert.equal(routeReply({ registry, channelId: "c", text: "yes", userId: "u1" }).kind, "none");
+  });
+  await check("a confirmation that is not the grant's own (another key) is never read as the grant; a click is recorded as a click, not as his words", async () => {
+    const un = world({ interactions: [{ id: "i-9", kind: "request_confirmation", idempotencyKey: "staging-check:g-1", status: "accepted", resolvedByUserId: OPERATOR, resolvedAt: "2026-01-04T00:00:00Z" }] });
+    await un.poller.tick(); await un.poller.tick();
+    assert.equal(un.gh.length, 0, un.gh.join("|"));
+    const yes = world({ interactions: [{ id: "i-1", kind: "request_confirmation", idempotencyKey: "grant-confirm:g-1", status: "accepted", resolvedByUserId: OPERATOR, resolvedAt: "2026-01-04T00:00:00Z" }] });
+    await yes.poller.tick();
+    const post = yes.gh.find((a) => a.startsWith("issue comment")) ?? "";
+    assert.ok(/clicked Confirm on the decision in Paperclip/.test(post) && !/verbatim/.test(post), post);
+  });
+  await check("a batch too long for one Discord message goes in several, each under the limit, every card posted once", async () => {
+    const { createOwnerAsks, announceGrantAsks } = require("../lib/owner-asks");
+    const registry = createOwnerAsks({ file: join(mkdtempSync(join(tmpdir(), "ga-")), "a.json") }); const msgs = [];
+    const cards = Array.from({ length: 15 }, (_, i) => ({ ownerCardId: `g-${i}`, cardIdentifier: `SLA-${i}`, link: `https://b/SLA/issues/SLA-${i}#interaction-${"x".repeat(36)}`, what: `production grant for owner/repo#${i} ${"y".repeat(60)}` }));
+    assert.equal(await announceGrantAsks({ registry, cards, channelId: "c", send: async (t) => { msgs.push(t); return { id: `m${msgs.length}` }; } }), true);
+    assert.ok(msgs.length > 1 && msgs.every((m) => m.length <= 1800), msgs.map((m) => m.length).join(","));
+    assert.ok(cards.every((c) => msgs.filter((m) => m.includes(c.link)).length === 1));
+    await announceGrantAsks({ registry, cards, channelId: "c", send: async (t) => { msgs.push(t); return { id: "z" }; } });
+    assert.equal(msgs.filter((m) => m.includes("#interaction-")).length, msgs.length - 0 && msgs.length);
   });
   console.log(`${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

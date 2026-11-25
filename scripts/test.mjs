@@ -3,7 +3,7 @@
  * Run test files in order, each with TMPDIR pointed at one scratch directory that
  * this script removes when the run ends, pass or fail.
  *
- *   node scripts/test.mjs                      # every test/*.test.js
+ *   node scripts/test.mjs                      # every test/*.test.{js,mjs}
  *   node scripts/test.mjs test/paperclip.test.js  # just these
  *
  * The tests call mkdtempSync(join(tmpdir(), "pc-")) about 130 times and remove
@@ -21,13 +21,13 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// No arguments runs every test/*.test.js, so a new test file is in CI the moment it
+// No arguments runs every test/*.test.js and *.test.mjs, so a new test file is in CI the moment it
 // exists. A hand-kept list once left a credential-isolation regression out of CI
 // (PR #181 review).
 const named = process.argv.slice(2);
 const files = named.length
   ? named
-  : readdirSync("test").filter((f) => f.endsWith(".test.js")).sort().map((f) => join("test", f));
+  : readdirSync("test").filter((f) => /\.test\.m?js$/.test(f)).sort().map((f) => join("test", f));
 if (!files.length) {
   console.error("no test files: pass paths, or run from the repo root with test/*.test.js present");
   process.exit(2);

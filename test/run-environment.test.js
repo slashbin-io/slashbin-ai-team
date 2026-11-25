@@ -34,7 +34,7 @@ const CODEX_CORE = ["HOME", "LOGNAME", "PATH", "SHELL", "USER", "USERNAME", "TMP
 const PUBLISHED = {
   BOT_STATE_DIR: "/srv/bot/state", BOT_SUMMARIES_DIR: "/srv/bot/history", BOT_ATTACHMENTS_DIR: "/srv/bot/attachments",
   BOT_OUTBOX_DIR: "/srv/bot/outbox/1", BOT_BUFFER_FILE: "/srv/bot/state/buffer.txt", BOT_SESSIONS_FILE: "/srv/bot/state/sessions.json",
-  BOT_JOB_HISTORY_FILE: "/srv/bot/state/job-history.jsonl", BOT_SCHEDULES_FILE: "/srv/bot/state/schedules.json", BOT_CHANNEL_ID: "1",
+  BOT_SCHEDULES_FILE: "/srv/bot/state/schedules.json", BOT_CHANNEL_ID: "1",
   CLAUDE_PLUGIN_ROOT: "/srv/bot/skills", // published on Codex (bot.js)
 };
 

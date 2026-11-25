@@ -233,7 +233,7 @@ check("recall finds nothing private with a board run's environment", () => {
   writeFileSync(join(root, "sessions.json"), "{}");
   const discordEnv = { ...process.env, BOT_BUFFER_FILE: join(root, "buffer.txt"), BOT_SUMMARIES_DIR: summaries,
     BOT_ATTACHMENTS_DIR: attachments, BOT_SESSIONS_FILE: join(root, "sessions.json"),
-    BOT_JOB_HISTORY_FILE: join(root, "job-history.jsonl"), BOT_SCHEDULES_FILE: join(root, "schedules.json") };
+    BOT_SCHEDULES_FILE: join(root, "schedules.json") };
   const recall = (env) => spawnSync(process.execPath, [join(__dirname, "..", "skill-pack", "bin", "recall.mjs"), secret],
     { env, encoding: "utf8" }).stdout;
   const discord = recall(discordEnv);

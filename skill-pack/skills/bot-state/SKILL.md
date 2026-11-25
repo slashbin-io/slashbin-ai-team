@@ -20,7 +20,6 @@ one** — the harness resolves these per bot and they move.
 | `$BOT_OUTBOX_DIR` | write a file here and it is attached to the reply |
 | `$BOT_BUFFER_FILE` | rolling conversation buffer |
 | `$BOT_SESSIONS_FILE` | per-channel session map |
-| `$BOT_JOB_HISTORY_FILE` | scheduled job run history |
 
 For each: report the resolved path, whether it exists, and a useful measure —
 file count for directories, size and last-modified for files.

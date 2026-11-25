@@ -40,17 +40,23 @@ check("a view is rebuilt, so a summary no longer the channel's leaves it", () =>
   assert.deepStrictEqual(readdirSync(p.summaries), []);
 });
 
-check("sessions and job history: the channel's own rows only", () => {
+check("sessions and job history: the channel's own rows only (rows come from the company record)", () => {
   const state = tmp(), hist = tmp();
-  const jh = join(state, "job-history.jsonl");
-  writeFileSync(jh, [JSON.stringify({ id: "a", channel: "111" }), JSON.stringify({ id: "b", channel: "222" }), JSON.stringify({ id: "c" }), "garbage"].join("\n") + "\n");
-  const p = pc.writeView({ stateDir: state, key: "111", historyDir: hist, sessions: { 111: { sessionId: "s1" }, 222: { sessionId: "s2" } }, jobHistoryFile: jh });
+  const jobRows = [{ id: "a", channel: "111" }, { id: "b", channel: "222" }, { id: "c" }];
+  const p = pc.writeView({ stateDir: state, key: "111", historyDir: hist, sessions: { 111: { sessionId: "s1" }, 222: { sessionId: "s2" } }, jobRows });
   assert.deepStrictEqual(Object.keys(JSON.parse(readFileSync(p.sessions, "utf8"))), ["111"]);
   assert.deepStrictEqual(readFileSync(p.jobHistory, "utf8").trim().split("\n").map((l) => JSON.parse(l).id), ["a"]);
 });
 
-check("the job-history row names the channel it ran for", () => {
-  assert.ok(/\.\.\.\(job\.channel \? \{ channel: job\.channel \} : \{\}\)/.test(bot));
+check("a failed read (no rows) keeps the old job-history view", () => {
+  const state = tmp(), hist = tmp();
+  const p = pc.writeView({ stateDir: state, key: "111", historyDir: hist, sessions: {}, jobRows: [{ id: "a", channel: "111" }] });
+  pc.writeView({ stateDir: state, key: "111", historyDir: hist, sessions: {}, jobRows: null });
+  assert.deepStrictEqual(readFileSync(p.jobHistory, "utf8").trim().split("\n").map((l) => JSON.parse(l).id), ["a"]);
+});
+
+check("the bot rebuilds the view from listRuns and logs, without throwing, when it fails", () => {
+  assert.ok(/jobRows: await jobRuns\.listRuns\(/.test(bot) && /job history view not refreshed/.test(bot));
 });
 
 check("a fresh session's context gets only its channel's summaries", () => {

@@ -1,4 +1,5 @@
 require("dotenv").config();
+const jobRuns = require("./lib/job-runs");
 const { Client, GatewayIntentBits, Partials } = require("discord.js");
 const { spawn } = require("child_process");
 const { WebSocket, WebSocketServer } = require("ws");
@@ -321,7 +322,6 @@ function runEnvFor(run, { channelId = "", runOutbox = OUTBOX_DIR, tmpDir = null,
       BOT_OUTBOX_DIR: runOutbox,
       BOT_BUFFER_FILE: memory.buffer,
       BOT_SESSIONS_FILE: memory.sessions,
-      BOT_JOB_HISTORY_FILE: memory.jobHistory,
       BOT_SCHEDULES_FILE: memory.schedules,
       BOT_CHANNEL_ID: String(channelId),
       // Skills name their scripts under $CLAUDE_PLUGIN_ROOT, which Claude sets
@@ -627,7 +627,6 @@ const BUFFER_FILE = join(STATE_DIR, "buffer.txt");
 // spawnClaude publishes these to the child env, and a path declared further down
 // the file is a temporal-dead-zone error waiting for the first message.
 const SCHEDULES_FILE = join(STATE_DIR, "schedules.json");
-const JOB_HISTORY_FILE = join(STATE_DIR, "job-history.jsonl");
 const SESSION_FILE = join(STATE_DIR, "sessions.json");
 
 // Files that used to live in the install directory, keyed by BOT_NAME. Moved on
@@ -662,11 +661,11 @@ const PRIVATE_CHANNELS = String(process.env.BOT_PRIVATE_CHANNELS || "").trim().t
 function memoryFor(scope) {
   if (!PRIVATE_CHANNELS) {
     return { buffer: BUFFER_FILE, summaries: HISTORY_DIR, attachments: ATTACHMENTS_DIR, sessions: SESSION_FILE,
-      jobHistory: JOB_HISTORY_FILE, schedules: SCHEDULES_FILE, state: STATE_DIR, home: join(STATE_DIR, "home"), write: [STATE_DIR, HISTORY_DIR, ATTACHMENTS_DIR] };
+      schedules: SCHEDULES_FILE, state: STATE_DIR, home: join(STATE_DIR, "home"), write: [STATE_DIR, HISTORY_DIR, ATTACHMENTS_DIR] };
   }
   const p = privateChannels.channelPaths(STATE_DIR, scope);
   return { buffer: p.buffer, summaries: p.summaries, attachments: p.attachments, sessions: p.sessions,
-    jobHistory: p.jobHistory, schedules: p.schedules, state: p.dir, dir: p.dir, home: p.home,
+    schedules: p.schedules, state: p.dir, dir: p.dir, home: p.home,
     // The channel folder is the bot's: a run reads it and writes only its jobs.
     // (Its home is bound separately, at the path the CLI expects.)
     read: [p.dir], write: [p.jobs] };
@@ -1529,7 +1528,7 @@ const botExchanges = new Map();
 // Where each PRIVATE_MEMORY_ENV variable points, in the same order: Discord
 // memory a board run is denied by path as well as by variable.
 function privateMemoryPaths() {
-  return [HISTORY_DIR, BUFFER_FILE, ATTACHMENTS_DIR, SESSION_FILE, JOB_HISTORY_FILE, SCHEDULES_FILE];
+  return [HISTORY_DIR, BUFFER_FILE, ATTACHMENTS_DIR, SESSION_FILE, SCHEDULES_FILE];
 }
 // Everything a board run must not read. The private-memory paths can be moved
 // out of the state folder one by one, so they are named as well as the folder;
@@ -1556,7 +1555,6 @@ LEGACY_STATE.push([join(__dirname, `.${BOT_NAME}-sessions.json`), SESSION_FILE])
 // Moved out of the summaries directory: a schedule is the user's, and losing it
 // to a re-clone is the kind of failure nobody notices until a job stops firing.
 LEGACY_STATE.push([join(HISTORY_DIR, "schedules.json"), SCHEDULES_FILE]);
-LEGACY_STATE.push([join(HISTORY_DIR, "job-history.jsonl"), JOB_HISTORY_FILE]);
 LEGACY_STATE.push([join(HISTORY_DIR, ".checkpoints.json"), CHECKPOINT_FILE]);
 
 /**
@@ -2310,6 +2308,8 @@ function isSafeToRetryFresh(err) {
  * forward. Each fire gets a clean session and leaves no trace in the channel's.
  */
 async function runClaude(prompt, channelId, reqLog, sendMessage, attachments = {}, channelName = "unknown", progress = null, opts = {}) {
+  try { opts = { ...opts, jobRows: await jobRuns.listRuns({ limit: 500 }) }; }
+  catch (e) { log.warn(`job history view not refreshed: ${e.message}`); }
   if (opts.ephemeral) {
     return spawnClaude(prompt, channelId, reqLog, sendMessage, attachments, channelName, null, progress, opts);
   }
@@ -2487,8 +2487,14 @@ function spawnClaude(prompt, channelId, reqLog, sendMessage, attachments, channe
     // final here: Codex's shell exclusions come from the same decision, so no
     // variable is kept from commands by a list computed before it was written.
     const seatRun = opts.paperclipRun;
+    // The job-history view is a derived cache: the record lives in the company record's job_runs
+    // table (lib/job-runs.js) and the file skill scripts read is rebuilt from it on every run.
+    // If the read fails nothing is written, the old view stays, and one line is logged.
+    const jobRows = opts.jobRows ?? null; // read by runClaude, which is async
     if (PRIVATE_CHANNELS) {
-      privateChannels.writeView({ stateDir: STATE_DIR, key: memScope, historyDir: HISTORY_DIR, sessions: Object.fromEntries(channelSessions), jobHistoryFile: JOB_HISTORY_FILE, groups: CHANNEL_GROUPS });
+      privateChannels.writeView({ stateDir: STATE_DIR, key: memScope, historyDir: HISTORY_DIR, sessions: Object.fromEntries(channelSessions), jobRows, groups: CHANNEL_GROUPS });
+    } else {
+      try { privateChannels.writeJobView(STATE_DIR, jobRows); } catch (e) { log.warn(`job history view not written: ${e.message}`); }
     }
     const built = runEnvFor(!opts.noBufferContext ? "session" : (narrowBoard ? "board" : "parity"), {
       channelId, runOutbox, tmpDir: boardTmp, memory,
@@ -3268,9 +3274,8 @@ function recordJobExecution(job, startTime, durationMs, success, error) {
     ...(job.channel ? { channel: job.channel } : {}),
     ...(error ? { error } : {}),
   };
-  try {
-    appendFileSync(JOB_HISTORY_FILE, JSON.stringify(record) + "\n");
-  } catch { /* ignore */ }
+  // Fire and forget: recordExecution never rejects, and a slow receiver must not hold the scheduler.
+  jobRuns.recordExecution(record, { log });
 }
 
 function describeCron(cron) {

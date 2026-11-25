@@ -3,7 +3,8 @@
  * Run test files in order, each with TMPDIR pointed at one scratch directory that
  * this script removes when the run ends, pass or fail.
  *
- *   node scripts/test.mjs test/paperclip.test.js test/runtime.test.js
+ *   node scripts/test.mjs                      # every test/*.test.js
+ *   node scripts/test.mjs test/paperclip.test.js  # just these
  *
  * The tests call mkdtempSync(join(tmpdir(), "pc-")) about 130 times and remove
  * almost none of it. On the bot host that was ~18,000 directories in /tmp in one
@@ -16,13 +17,19 @@
  * replaced did.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const files = process.argv.slice(2);
+// No arguments runs every test/*.test.js, so a new test file is in CI the moment it
+// exists. A hand-kept list once left a credential-isolation regression out of CI
+// (PR #181 review).
+const named = process.argv.slice(2);
+const files = named.length
+  ? named
+  : readdirSync("test").filter((f) => f.endsWith(".test.js")).sort().map((f) => join("test", f));
 if (!files.length) {
-  console.error("usage: node scripts/test.mjs <test file>...");
+  console.error("no test files: pass paths, or run from the repo root with test/*.test.js present");
   process.exit(2);
 }
 

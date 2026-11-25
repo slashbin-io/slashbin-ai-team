@@ -1,5 +1,5 @@
 /**
- * Job history in the company record (lib/job-runs.js, EM#2114 feature 2): the signed write,
+ * Job history in the company record (lib/job-runs.js): the signed write,
  * its never-throws contract, and the reader mapping.
  */
 const http = require("http");

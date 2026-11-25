@@ -32,8 +32,8 @@ mkdirSync(hist, { recursive: true });
 // Acme's two channels (H1, H2) share a group; P1 and P2 share another; SOLO is in none.
 const raw = JSON.stringify({ acme: ["H1", "H2"], "po-team": ["P1", "P2"] });
 const groups = pc.channelGroups(raw, { enabled: true });
-const view = (channel, sessions = {}, jobHistoryFile = join(root, "none")) =>
-  pc.writeView({ stateDir: state, key: groups.scopeOf(channel), historyDir: hist, sessions, jobHistoryFile, groups });
+const view = (channel, sessions = {}) =>
+  pc.writeView({ stateDir: state, key: groups.scopeOf(channel), historyDir: hist, sessions, groups });
 const summaryNames = (p) => readdirSync(p.summaries).sort();
 
 console.log("\nChannel groups — resolving a channel to its scope");
@@ -108,14 +108,6 @@ check("sessions stay keyed by real channel id: a group's view holds every member
   const p = view("H1", sessions);
   assert.deepStrictEqual(JSON.parse(readFileSync(p.sessions, "utf8")), { H1: { sessionId: "s-h1" }, H2: { sessionId: "s-h2" } });
   assert.deepStrictEqual(Object.keys(JSON.parse(readFileSync(view("SOLO", sessions).sessions, "utf8"))), ["SOLO"]);
-});
-
-check("job history: a group's view keeps rows whose channel is in the group", () => {
-  const jh = join(root, "job-history.jsonl");
-  writeFileSync(jh, ["H1", "H2", "SOLO", "P1"].map((c) => JSON.stringify({ id: `row-${c}`, channel: c })).join("\n") + "\nnot json\n");
-  const ids = (p) => readFileSync(p.jobHistory, "utf8").trim().split("\n").map((l) => JSON.parse(l).id);
-  assert.deepStrictEqual(ids(view("H2", {}, jh)), ["row-H1", "row-H2"]);
-  assert.deepStrictEqual(ids(view("SOLO", {}, jh)), ["row-SOLO"]);
 });
 
 console.log("\nChannel groups — schedules");

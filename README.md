@@ -353,6 +353,9 @@ For a bot that serves people who must not see each other's work. Both are off un
 | `BOT_SCHEDULE_CHECK_MS` | `60000` | How often schedules are evaluated |
 | `BOT_SCHEDULE_LOOKBACK_MINUTES` | `5` | How far back a missed run is recovered |
 | `BOT_MAX_SCHEDULED_JOBS` | `25` | Cap on jobs per bot |
+| `SLASHBIN_DATA_RECEIVER_BASE_URL` | unset | Company record receiver; scheduled-job history is written to and read from its `job_runs` table. Unset: runs are not recorded |
+| `SLASHBIN_EVENTS_SIGNING_KEY__JOB_RUN` | unset | HMAC key for writing job runs (secret; from the secrets manager) |
+| `COMPANY_RECORD_READ_TOKEN` | unset | Bearer token for reading job runs (`schedule.mjs history`, `recall`); secret |
 | `BOT_MAX_WAKE_ATTEMPTS` | `12` | How many times a self-re-arming follow-up may look before it must stop |
 | `BOT_WAKE_CARRY_MAX_MS` | `SESSION_TIMEOUT_MS` | How long a chain of follow-ups may keep resuming the conversation that started it |
 

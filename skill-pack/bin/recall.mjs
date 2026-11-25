@@ -20,6 +20,7 @@
  */
 import { readFileSync, readdirSync, existsSync, statSync } from "fs";
 import { join } from "path";
+import { listRuns } from "./job-runs-read.mjs";
 
 const query = process.argv.slice(2).join(" ").trim();
 if (!query) {
@@ -180,23 +181,18 @@ else {
 }
 
 // --------------------------------------------------------------- job history
-const jobFile = process.env.BOT_JOB_HISTORY_FILE;
-if (!jobFile) note("jobs", "UNAVAILABLE", "BOT_JOB_HISTORY_FILE is not set");
-else if (!existsSync(jobFile)) note("jobs", "EMPTY", "no scheduled runs yet");
-else {
-  try {
-    const rows = readFileSync(jobFile, "utf8").split("\n").filter(Boolean)
-      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-    const hits = rows.filter((r) => score(JSON.stringify(r)) > 0);
-    if (!hits.length) note("jobs", "NO MATCH", `${rows.length} run(s) searched`);
-    else {
-      note("jobs", "OK", `${hits.length} of ${rows.length} run(s) match`);
-      emit("### scheduled runs\n" + hits.slice(-8).map((r) =>
-        `- ${r.id} fired ${r.firedAt} — ${r.success ? "ok" : `FAILED: ${r.error || "unknown"}`}`
-      ).join("\n") + "\n");
-    }
-  } catch (e) { note("jobs", "UNREADABLE", e.message); }
-}
+try {
+  const rows = await listRuns({ limit: 500 });
+  const hits = rows.filter((r) => score(JSON.stringify(r)) > 0);
+  if (!rows.length) note("jobs", "EMPTY", "no scheduled runs yet");
+  else if (!hits.length) note("jobs", "NO MATCH", `${rows.length} run(s) searched`);
+  else {
+    note("jobs", "OK", `${hits.length} of ${rows.length} run(s) match`);
+    emit("### scheduled runs\n" + hits.slice(0, 8).reverse().map((r) =>
+      `- ${r.id} fired ${r.firedAt} — ${r.success ? "ok" : `FAILED: ${r.error || "unknown"}`}`
+    ).join("\n") + "\n");
+  }
+} catch (e) { note("jobs", "UNAVAILABLE", e.message); }
 
 // ----------------------------------------------------------------- output
 console.log(`# Recall for: ${query}\n`);

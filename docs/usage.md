@@ -223,8 +223,8 @@ Five fields: `minute hour day month weekday`, weekday `0` = Sunday. **Only `*` a
 comma-separated numbers** — write `1,2,3,4,5`, never `1-5`, which parses as `1` and
 would fire on Mondays alone. The tooling rejects a range rather than accepting one.
 
-Add `"expires": "2026-12-31T00:00:00Z"` for a one-shot. Every run is appended to
-`job-history.jsonl`. A run missed during a restart or a gateway blip is recovered.
+Add `"expires": "2026-12-31T00:00:00Z"` for a one-shot. Every run is recorded in
+the company record's `job_runs` table (`SLASHBIN_DATA_RECEIVER_BASE_URL`, `SLASHBIN_EVENTS_SIGNING_KEY__JOB_RUN` to write, `COMPANY_RECORD_READ_TOKEN` to read; unset, nothing is recorded and history reads "unavailable"). A run missed during a restart or a gateway blip is recovered.
 
 A **wake-up** lives in the same file and carries `runAt` instead of `cron`:
 

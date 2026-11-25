@@ -155,10 +155,10 @@ check("it distinguishes 'searched and found nothing' from 'never searched'", () 
   }
 });
 
-check("it searches all five stores", () => {
+check("it searches all five stores (job history from the company record)", () => {
   const src = readFileSync(join(PACK, "bin/recall.mjs"), "utf8");
   for (const v of ["BOT_SUMMARIES_DIR", "BOT_BUFFER_FILE", "BOT_ATTACHMENTS_DIR",
-                   "BOT_SESSIONS_FILE", "BOT_JOB_HISTORY_FILE"]) {
+                   "BOT_SESSIONS_FILE", "listRuns"]) {
     assert.ok(src.includes(v), `${v} is never read — that store would be silently skipped`);
   }
 });

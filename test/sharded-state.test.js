@@ -313,6 +313,20 @@ const bigState = (n) => {
     assert.strictEqual(reg.byMessage(CH, mine.id).key, fresh.key);
   });
 
+  await check("an announcement sent before refs existed is adopted once, in creation order", async () => {
+    const st = createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-legacy", log: quiet });
+    assert.ok(await st.open());
+    const reg = createOwnerAsks({ store: st });
+    const t0 = Date.now();
+    const mk = (k, at) => reg.create({ key: reg.keyOf(null, k), channelId: CH, cardIdentifier: "T", decision: "d", yesAction: "y", link: "https://x/1", answerers: [], createdAt: new Date(at).toISOString() });
+    const a = mk("a", t0), b = mk("b", t0 + 1);
+    const text = askMessage(a, { withRef: false });
+    const m1 = { id: flake(t0 + 1000), content: `<@1> ${text}` }, m2 = { id: flake(t0 + 2000), content: `<@1> ${text}` };
+    const early = { id: flake(t0 - 5000), content: text };
+    assert.strictEqual(await recoverUnsentAsks({ registry: reg, scan: async () => [early, m1, m2] }), 2);
+    assert.deepStrictEqual([reg.get(a.key).discordMessageId, reg.get(b.key).discordMessageId], [m1.id, m2.id]);
+  });
+
   await check("a message already bound to another ask is never adopted", async () => {
     const st = createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-bound", log: quiet });
     assert.ok(await st.open());

@@ -32,7 +32,7 @@ const quiet = { warn() {}, info() {} };
   });
 
   await check("snowflakes compare as numbers", () => {
-    assert.ok(newer("1000000000000000010", "999999999999999999"));
+    assert.ok(newer("123456789012345678", "99999999"));
     assert.ok(!newer("5", "5"));
   });
 

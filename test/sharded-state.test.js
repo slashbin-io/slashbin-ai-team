@@ -266,6 +266,26 @@ const bigState = (n) => {
     assert.strictEqual(createOwnerAsks({ store: t }).get(reg.keyOf(null, "own-9")).discordMessageId, "m");
   });
 
+  await check("an ask sent just before a restart is adopted, not sent twice", async () => {
+    const store = mkStore();
+    const st = createOwnerAskStore({ store, bot: "b", name: "asks-adopt", log: quiet });
+    assert.ok(await st.open());
+    const reg = createOwnerAsks({ store: st });
+    const ask = { ownerCardId: "own-10", cardIdentifier: "T-10", issueId: "i-10", decision: "Approve?" };
+    const channel = [];
+    let sends = 0;
+    // The message reaches the channel but its id never comes back: the binding is durable with no id.
+    const lostSend = async (text) => { channel.push({ id: "orig", text }); return null; };
+    const r1 = await announceAsk({ registry: reg, ask, channelId: "123456789012345678", send: lostSend });
+    assert.strictEqual(r1.posted, false);
+    const st2 = createOwnerAskStore({ store, bot: "b", name: "asks-adopt", log: quiet });
+    await st2.open();
+    const reg2 = createOwnerAsks({ store: st2 });
+    const r2 = await announceAsk({ registry: reg2, ask, channelId: "123456789012345678",
+      send: async () => { sends++; return { id: "again" }; }, findSent: async (text) => channel.find((m) => m.text === text) ?? null });
+    assert.deepStrictEqual([r2.binding.discordMessageId, sends], ["orig", 0]);
+  });
+
   await check("the poller launches nothing until its state is in the record", () => {
     const src = readFileSync(join(__dirname, "..", "lib/paperclip.js"), "utf8");
     const at = src.indexOf("const preflight = async");

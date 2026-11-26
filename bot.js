@@ -3876,6 +3876,11 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
         if (!channel) return false;
         const { binding, posted } = await announceAsk({ registry: OWNER_ASKS, ask, board: board.id ?? null, channelId,
           answerers,
+          // The ask may have gone out just before a restart: find our own copy in the recent messages.
+          findSent: async (text) => {
+            const recent = await channel.messages.fetch({ limit: 50 });
+            return recent.find((m) => m.author?.id === client.user?.id && typeof m.content === "string" && m.content.includes(text)) ?? null;
+          },
           send: (content) => channel.send({ content: `${escalation.mention ? `${escalation.mention} ` : ""}${content}`, allowedMentions: { parse: ["users"] } }) });
         if (posted) pLog.info({ paperclipTask: ask.cardIdentifier, channelId, messageId: binding.discordMessageId }, "Paperclip ask to a person — announced on Discord");
         return Boolean(binding.discordMessageId);

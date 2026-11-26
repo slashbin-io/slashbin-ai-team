@@ -764,18 +764,17 @@ const PAPERCLIP_BOARDS = SURFACES.paperclip ? CONFIGURED_BOARDS : [];
 // OWNER_RELAYS maps a board to the poller's relay.
 let OWNER_ASKS = null;
 const OWNER_RELAYS = {};
-// The bot's own copy of an ask, searched forward through the channel's history from just before the binding was
-// created, however many pages that takes. A fetch that fails throws: the caller then sends nothing.
+// The bot's own messages in a channel from just before `fromMs` on, paged forward however many pages that takes.
+// A fetch that fails throws: the caller then sends nothing.
 const DISCORD_EPOCH = 1420070400000n;
-const findSentAsk = async (channel, binding, text) => {
-  const from = Math.max(0, Date.parse(binding.createdAt) - 60_000);
-  if (!Number.isFinite(from)) throw new Error("the ask has no creation time");
-  let after = String((BigInt(from) - DISCORD_EPOCH) << 22n);
+const botMessagesSince = async (channel, fromMs) => {
+  if (!Number.isFinite(fromMs)) throw new Error("the ask has no creation time");
+  let after = String((BigInt(Math.max(0, fromMs - 60_000)) - DISCORD_EPOCH) << 22n);
+  const mine = [];
   for (;;) {
     const page = await channel.messages.fetch({ limit: 100, after });
-    if (!page.size) return null;
-    const hit = page.find((m) => m.author?.id === client.user?.id && typeof m.content === "string" && m.content.includes(text));
-    if (hit) return hit;
+    if (!page.size) return mine;
+    for (const m of page.values()) if (m.author?.id === client.user?.id) mine.push({ id: m.id, content: m.content });
     after = page.reduce((top, m) => (BigInt(m.id) > BigInt(top) ? m.id : top), after);
   }
 };
@@ -789,10 +788,10 @@ const openOwnerAsks = async () => {
       ownerAsksRecovery = (async () => {
         if (!client) return;
         if (!client.isReady()) await new Promise((res) => client.once("ready", res));
-        const n = await recoverUnsentAsks({ registry: OWNER_ASKS, findSent: async (b, text) => {
-          const ch = await resolveBridgeChannel(b.channelId, { ownerAsk: true });
+        const n = await recoverUnsentAsks({ registry: OWNER_ASKS, scan: async (channelId, fromMs) => {
+          const ch = await resolveBridgeChannel(channelId, { ownerAsk: true });
           if (!ch) throw new Error("channel unreachable");
-          return findSentAsk(ch, b, text);
+          return botMessagesSince(ch, fromMs);
         } });
         if (n) log.info({ adopted: n }, "Owner asks sent before a restart recovered from the channel");
       })().catch((err) => log.warn({ err: err.message }, "Owner-ask recovery did not finish"));
@@ -3906,7 +3905,7 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
         if (!channel) return false;
         const { binding, posted } = await announceAsk({ registry: OWNER_ASKS, ask, board: board.id ?? null, channelId,
           answerers,
-          findSent: (b, text) => findSentAsk(channel, b, text),
+          scan: (_channelId, fromMs) => botMessagesSince(channel, fromMs),
           send: (content) => channel.send({ content: `${escalation.mention ? `${escalation.mention} ` : ""}${content}`, allowedMentions: { parse: ["users"] } }) });
         if (posted) pLog.info({ paperclipTask: ask.cardIdentifier, channelId, messageId: binding.discordMessageId }, "Paperclip ask to a person — announced on Discord");
         return Boolean(binding.discordMessageId);

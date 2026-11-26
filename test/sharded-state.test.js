@@ -11,7 +11,7 @@ const { startReceiver } = require("./fake-receiver");
 const { ScheduleStore } = require("../lib/schedule-store");
 const { createPaperclipStore, splitState, joinState } = require("../lib/paperclip-state");
 const { ShardedRecord } = require("../lib/sharded-record");
-const { createOwnerAsks, createOwnerAskStore, announceAsk, recoverUnsentAsks } = require("../lib/owner-asks");
+const { createOwnerAsks, createOwnerAskStore, announceAsk, recoverUnsentAsks, askMessage } = require("../lib/owner-asks");
 
 let passed = 0, failed = 0;
 async function check(name, fn) {
@@ -266,6 +266,8 @@ const bigState = (n) => {
     assert.strictEqual(createOwnerAsks({ store: t }).get(reg.keyOf(null, "own-9")).discordMessageId, "m");
   });
 
+  const flake = (ms, n = 0) => String(((BigInt(ms) - 1420070400000n) << 22n) + BigInt(n));
+  const CH = "123456789012345678";
   await check("an ask sent just before a restart is adopted, not sent twice", async () => {
     const store = mkStore();
     const st = createOwnerAskStore({ store, bot: "b", name: "asks-adopt", log: quiet });
@@ -275,15 +277,65 @@ const bigState = (n) => {
     const channel = [];
     let sends = 0;
     // The message reaches the channel but its id never comes back: the binding is durable with no id.
-    const lostSend = async (text) => { channel.push({ id: "orig", text }); return null; };
-    const r1 = await announceAsk({ registry: reg, ask, channelId: "123456789012345678", send: lostSend });
+    const lostSend = async (text) => { channel.push({ id: flake(Date.now() + 5), content: text }); return null; };
+    const r1 = await announceAsk({ registry: reg, ask, channelId: CH, send: lostSend });
     assert.strictEqual(r1.posted, false);
     const st2 = createOwnerAskStore({ store, bot: "b", name: "asks-adopt", log: quiet });
     await st2.open();
     const reg2 = createOwnerAsks({ store: st2 });
-    const r2 = await announceAsk({ registry: reg2, ask, channelId: "123456789012345678",
-      send: async () => { sends++; return { id: "again" }; }, findSent: async (b, text) => channel.find((m) => m.text === text) ?? null });
-    assert.deepStrictEqual([r2.binding.discordMessageId, sends], ["orig", 0]);
+    const r2 = await announceAsk({ registry: reg2, ask, channelId: CH,
+      send: async () => { sends++; return { id: "again" }; }, scan: async () => channel });
+    assert.deepStrictEqual([r2.binding.discordMessageId, sends], [channel[0].id, 0]);
+  });
+
+  await check("an identical earlier ask 30s before, with 120 messages between, is never adopted for the new one", async () => {
+    const st = createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-twin", log: quiet });
+    assert.ok(await st.open());
+    const reg = createOwnerAsks({ store: st });
+    const t0 = Date.now();
+    const mk = (id, at) => reg.create({ key: reg.keyOf(null, id), board: null, channelId: CH, cardIdentifier: "T-1", issueId: id, ownerCardId: id,
+      decision: "Approve?", yesAction: "go", link: "https://x/1", answerers: ["u1"], createdAt: new Date(at).toISOString() });
+    const old = mk("own-old", t0 - 30_000);
+    old.discordMessageId = flake(t0 - 29_000); old.state = "answered"; reg.put(old);
+    const fresh = mk("own-new", t0);
+    const history = [{ id: old.discordMessageId, content: askMessage(old) }];
+    for (let i = 0; i < 120; i++) history.push({ id: flake(t0 - 28_000 + i * 100), content: `chat ${i}` });
+    // The older announcement carries the same text apart from its ref, and even its ref text must not match.
+    history.push({ id: flake(t0 - 5_000), content: askMessage(fresh).replace(/ref: \w+/, `ref: ${"0".repeat(12)}`) });
+    const mine = { id: flake(t0 + 2_000), content: askMessage(fresh) };
+    history.push(mine);
+    let sends = 0;
+    assert.strictEqual(await recoverUnsentAsks({ registry: reg, scan: async () => history }), 1);
+    assert.strictEqual(reg.get(fresh.key).discordMessageId, mine.id);
+    assert.strictEqual(reg.get(old.key).discordMessageId, flake(t0 - 29_000));
+    const r = await announceAsk({ registry: reg, ask: { ownerCardId: "own-new", cardIdentifier: "T-1", issueId: "own-new", decision: "Approve?" }, channelId: CH, send: async () => { sends++; return { id: "x" }; } });
+    assert.deepStrictEqual([r.posted, sends], [false, 0]);
+    assert.strictEqual(reg.byMessage(CH, mine.id).key, fresh.key);
+  });
+
+  await check("a message already bound to another ask is never adopted", async () => {
+    const st = createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-bound", log: quiet });
+    assert.ok(await st.open());
+    const reg = createOwnerAsks({ store: st });
+    const t0 = Date.now();
+    const a = reg.create({ key: reg.keyOf(null, "a"), channelId: CH, cardIdentifier: "T", decision: "d", yesAction: "y", answerers: [], createdAt: new Date(t0).toISOString() });
+    const msg = { id: flake(t0 + 1000), content: askMessage(a) };
+    const b = reg.create({ key: reg.keyOf(null, "b"), channelId: CH, cardIdentifier: "T", decision: "d", yesAction: "y", answerers: [], createdAt: new Date(t0).toISOString(), discordMessageId: msg.id });
+    assert.strictEqual(await recoverUnsentAsks({ registry: reg, scan: async () => [msg] }), 0);
+    assert.strictEqual(reg.get(a.key).discordMessageId, null);
+  });
+
+  await check("startup recovery reads a channel's history once for all its bindings", async () => {
+    const st = createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-once", log: quiet });
+    assert.ok(await st.open());
+    const reg = createOwnerAsks({ store: st });
+    const t0 = Date.now();
+    const made = [];
+    for (let i = 0; i < 20; i++) made.push(reg.create({ key: reg.keyOf(null, `k${i}`), channelId: CH, cardIdentifier: `T-${i}`, decision: "d", yesAction: "y", answerers: [], createdAt: new Date(t0 + i).toISOString() }));
+    const history = made.map((b, i) => ({ id: flake(t0 + 1000 + i), content: askMessage(b) }));
+    let scans = 0;
+    assert.strictEqual(await recoverUnsentAsks({ registry: reg, scan: async () => { scans++; return history; } }), 20);
+    assert.strictEqual(scans, 1);
   });
 
   await check("a history lookup that errors sends nothing, and startup recovery adopts the original", async () => {
@@ -293,14 +345,15 @@ const bigState = (n) => {
     const ask = { ownerCardId: "own-11", cardIdentifier: "T-11", issueId: "i-11", decision: "Approve?" };
     let sends = 0;
     const send = async () => { sends++; return { id: "new" }; };
-    const r1 = await announceAsk({ registry: reg, ask, channelId: "123456789012345678", send, findSent: async () => { throw new Error("history down"); } });
+    const r1 = await announceAsk({ registry: reg, ask, channelId: CH, send, scan: async () => { throw new Error("history down"); } });
     assert.deepStrictEqual([r1.posted, r1.binding.discordMessageId, sends], [false, null, 0]);
-    const seen = [];
-    assert.strictEqual(await recoverUnsentAsks({ registry: reg, findSent: async (b) => { seen.push(b.createdAt); throw new Error("down"); } }), 0);
-    assert.strictEqual(reg.get(reg.keyOf(null, "own-11")).discordMessageId, null);
-    assert.strictEqual(await recoverUnsentAsks({ registry: reg, findSent: async () => ({ id: "orig" }) }), 1);
-    assert.strictEqual(reg.byMessage("123456789012345678", "orig")?.cardIdentifier, "T-11");
-    const r2 = await announceAsk({ registry: reg, ask, channelId: "123456789012345678", send });
+    assert.strictEqual(await recoverUnsentAsks({ registry: reg, scan: async () => { throw new Error("down"); } }), 0);
+    const b = reg.get(reg.keyOf(null, "own-11"));
+    assert.strictEqual(b.discordMessageId, null);
+    const orig = { id: flake(Date.now() + 1000), content: askMessage(b) };
+    assert.strictEqual(await recoverUnsentAsks({ registry: reg, scan: async () => [orig] }), 1);
+    assert.strictEqual(reg.byMessage(CH, orig.id)?.cardIdentifier, "T-11");
+    const r2 = await announceAsk({ registry: reg, ask, channelId: CH, send });
     assert.deepStrictEqual([r2.posted, sends], [false, 0]);
   });
 

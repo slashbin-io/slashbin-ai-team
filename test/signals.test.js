@@ -41,7 +41,7 @@ function cli(file, args) {
   }
 }
 const freshState = () => join(mkdtempSync(join(tmpdir(), "signal-test-")), "schedules.json");
-const jobs = (f) => JSON.parse(readFileSync(f, "utf8"));
+const { bookedJobs: jobs } = require("./requests-helper");
 
 console.log("\nWho may start a run");
 
@@ -195,7 +195,7 @@ check("an unmatched signal is remembered, not an error", () => {
 });
 
 check("a released job is claimed, so tick and signal cannot double-fire it", () => {
-  assert.match(bot, /function claimWakeJob\(wanted\)[\s\S]{0,320}saveSchedules\(current\.filter/,
+  assert.match(bot, /function claimWakeJob\(wanted\)[\s\S]{0,320}changeSchedules\(scheduleScopeOf\(job\.channel\), \(jobs\) => jobs\.filter/,
     "claiming must read and write with no await between, or a deploy finishing on the minute reports twice");
   const fn = bot.slice(bot.indexOf("async function runWakeJob("), bot.indexOf("async function runScheduledJobs("));
   assert.match(fn, /if \(!claimWakeJob\(job\)\) return false;/);

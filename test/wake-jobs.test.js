@@ -43,7 +43,7 @@ function cli(file, args, env = {}) {
   }
 }
 
-const jobs = (file) => JSON.parse(readFileSync(file, "utf8"));
+const { bookedJobs: jobs } = require("./requests-helper");
 
 console.log("\nA follow-up is a job on disk, not an intention");
 

@@ -96,20 +96,12 @@ check("a job is taken only from its own channel's file", () => {
   assert.deepStrictEqual(dropped.map((d) => d.id), ["planted"]);
 });
 
-check("saving writes each job to its own channel, and empties a channel left with none", () => {
-  const state = tmp();
-  mkdirSync(join(state, "channels", "333", "jobs"), { recursive: true });
-  writeFileSync(join(state, "channels", "333", "jobs", "schedules.json"), JSON.stringify([{ id: "gone", channel: "333" }]));
-  pc.saveChannelSchedules(state, [{ id: "a", channel: "111" }, { id: "b", channel: "222" }]);
-  const read = (k) => JSON.parse(readFileSync(join(state, "channels", k, "jobs", "schedules.json"), "utf8")).map((j) => j.id);
-  assert.deepStrictEqual(read("111"), ["a"]);
-  assert.deepStrictEqual(read("222"), ["b"]);
-  assert.deepStrictEqual(read("333"), []);
-});
-
-check("the bot loads and saves through the per-channel files in private mode", () => {
-  assert.ok(/if \(PRIVATE_CHANNELS\) \{\s*const \{ jobs, dropped, problems \} = privateChannels\.loadChannelSchedules\(STATE_DIR, CHANNEL_GROUPS\.scopeOf\)/.test(bot));
-  assert.ok(/privateChannels\.saveChannelSchedules\(STATE_DIR, schedules, CHANNEL_GROUPS\.scopeOf\)/.test(bot));
+check("nothing writes a schedules file: the old save is gone and the bot keeps jobs in the company record per scope", () => {
+  assert.strictEqual(pc.saveChannelSchedules, undefined, "the per-channel save is still exported");
+  assert.ok(/new ScheduleStore\(/.test(bot), "the bot does not use the schedule store");
+  assert.ok(/function changeSchedules\(scope, op\)/.test(bot));
+  assert.ok(!/privateChannels\.saveChannelSchedules|writeFileSync\(SCHEDULES_FILE|saveSchedules\(/.test(bot), "the bot still saves a schedules file");
+  assert.ok(!/saveChannelSchedules|renameSync\(tmp, p\.schedules\)/.test(readFileSync(join(__dirname, "..", "lib", "private-channels.js"), "utf8")));
 });
 
 check("a schedule file that is a link is not read through", () => {
@@ -122,16 +114,14 @@ check("a schedule file that is a link is not read through", () => {
   assert.strictEqual(problems.length, 1);
 });
 
-check("saving replaces a planted link instead of writing through it", () => {
+check("a planted link in a channel's jobs folder is never written through: the bot writes no file there", () => {
   const state = tmp(), outside = tmp();
   const target = join(outside, "victim");
   writeFileSync(target, "UNTOUCHED");
   mkdirSync(join(state, "channels", "111", "jobs"), { recursive: true });
-  const f = join(state, "channels", "111", "jobs", "schedules.json");
-  symlinkSync(target, f);
-  pc.saveChannelSchedules(state, [{ id: "a", channel: "111" }]);
+  symlinkSync(target, join(state, "channels", "111", "jobs", "schedules.json"));
+  assert.strictEqual(pc.saveChannelSchedules, undefined);
   assert.strictEqual(readFileSync(target, "utf8"), "UNTOUCHED");
-  assert.ok(!lstatSync(f).isSymbolicLink());
 });
 
 check("a view is refused when a channel folder the bot writes has become a link", () => {
@@ -299,10 +289,11 @@ check("a group view: members' summaries (stamped with the scope) and sessions, n
   assert.deepStrictEqual(Object.keys(JSON.parse(readFileSync(p.sessions, "utf8"))).sort(), ["111", "222"]);
 });
 
-check("schedules go by scope when given scopeOf", () => {
+check("old schedule files are read by scope when given scopeOf (for the one-time import)", () => {
   const state = tmp();
   const groups = pc.channelGroups('{"acme":["111","222"]}', { enabled: true });
-  pc.saveChannelSchedules(state, [{ id: "a", channel: "111" }, { id: "b", channel: "222" }], groups.scopeOf);
+  mkdirSync(join(state, "channels", "group_acme", "jobs"), { recursive: true });
+  writeFileSync(join(state, "channels", "group_acme", "jobs", "schedules.json"), JSON.stringify([{ id: "a", channel: "111" }, { id: "b", channel: "222" }]));
   assert.deepStrictEqual(pc.loadChannelSchedules(state, groups.scopeOf).jobs.map((j) => j.id).sort(), ["a", "b"]);
   assert.strictEqual(pc.loadChannelSchedules(state).dropped.length, 2, "without scopeOf the group's file holds jobs for channels it is not named for");
 });

@@ -363,7 +363,8 @@ export function checkScheduleCadence(stateDir, historyDir, harnessDir, sessionTi
   const { jobsTighterThanTimeout } = require_("../../lib/cron-cadence.js");
   const root = resolve(stateDir || historyDir || join(harnessDir, ".bot-history"));
   const file = join(root, "schedules.json");
-  if (!existsSync(file)) return ok("Scheduled jobs", "none configured");
+  // The list lives in the company record now; a leftover local file is the pre-import copy, still checked when present.
+  if (!existsSync(file)) return ok("Scheduled jobs", "kept in the company record (cadence is not checked from here)");
 
   let jobs;
   try {

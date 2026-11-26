@@ -57,9 +57,9 @@ A command a bot defines in its own repo with a reserved name is shadowed and nev
 | Run killed after it started work | no retry; the reply says check whether the work landed, then `/fresh` | check before asking again |
 | Scheduled check finds nothing | `isNothingToReport` drops a placeholder-only reply ("none", "no changes"); the always-appended prompt block `Speaking unprompted` tells a wake to send nothing | none: silence is the answer. Never ask for a heartbeat |
 | Follow-up promised | booked with the scheduler in the same reply, with a fire time; a sleep or timer dies with the session | do not ask again. No job means a defect |
-| Scheduler (`cron` job) | ticks every `BOT_SCHEDULE_CHECK_MS` (60 s) over `schedules.json`; looks back `BOT_SCHEDULE_LOOKBACK_MINUTES` (5) for a missed run; a missing channel retries next tick; a job with `expires` is removed once it has run; a failure posts `Scheduled job "<id>" failed` | the same failure twice: file it |
+| Scheduler (`cron` job) | ticks every `BOT_SCHEDULE_CHECK_MS` (60 s) over the bot's schedules in the company record (a run sees them as a read-only `schedules.json` view); looks back `BOT_SCHEDULE_LOOKBACK_MINUTES` (5) for a missed run; a missing channel retries next tick; a job with `expires` is removed once it has run; a failure posts `Scheduled job "<id>" failed` | the same failure twice: file it |
 | Wake job (`runAt`) | fires once, is removed before it runs, may re-arm itself up to `BOT_MAX_WAKE_ATTEMPTS` (12) looks, 1 min to 7 days out | wait for the last look. Never create or delete a bot's job |
-| Discord off | cron jobs are refused at load and kept in the file; wake and board work continue | none |
+| Discord off | cron jobs are refused at load and kept in the record; wake and board work continue | none |
 | History rotation | the buffer rotates at `BUFFER_MAX_BYTES` (32 KB): the oldest `BUFFER_ROTATE_PERCENT` (40%) is summarized into `BOT_HISTORY_DIR` as `buffer-rotation`, then dropped; channel summaries run every `SUMMARIZE_INTERVAL_MS` | none. Do not edit summaries; they are the bot's memory |
 | Prompt too long | context cut oldest-first to `CONTEXT_MAX_BYTES` (64 KB) | none |
 | Restart mid-board-answer | `PAPERCLIP_RESUME_INTERRUPTED` reruns the task once, told what may have happened | none |
@@ -109,7 +109,7 @@ defaults; a process may set its own.
 
 - Answer in a channel it does not own, or for a bot.
 - File an issue for a bot or move its card.
-- Create, edit or delete a bot's `schedules.json` job, session, buffer, summary or state file.
+- Create, edit or delete a bot's scheduled job, session, buffer, summary or state file.
 - Send a bare `stop`, `/fresh` or `/status` into a shared channel to see if a bot is alive.
 - Re-ask a bot that said it will check back, or ask for a status when a check found nothing.
 - Restart a bot to change its config without the production grant: it is a live deployment.

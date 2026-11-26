@@ -1,5 +1,7 @@
 require("dotenv").config();
 const jobRuns = require("./lib/job-runs");
+const { ScheduleStore } = require("./lib/schedule-store");
+const scheduleRequests = require("./lib/schedule-requests");
 const { Client, GatewayIntentBits, Partials } = require("discord.js");
 const { spawn } = require("child_process");
 const { WebSocket, WebSocketServer } = require("ws");
@@ -626,7 +628,10 @@ const BUFFER_FILE = join(STATE_DIR, "buffer.txt");
 // Declared here with the other state paths rather than beside the scheduler:
 // spawnClaude publishes these to the child env, and a path declared further down
 // the file is a temporal-dead-zone error waiting for the first message.
+// The schedules list lives in the company record (lib/schedule-store.js). This is the file it used to
+// live in, read only by the one-time import; SCHEDULES_VIEW is what a run reads (rebuilt before every run).
 const SCHEDULES_FILE = join(STATE_DIR, "schedules.json");
+const SCHEDULES_VIEW = join(STATE_DIR, "schedules-view.json");
 const SESSION_FILE = join(STATE_DIR, "sessions.json");
 
 // Files that used to live in the install directory, keyed by BOT_NAME. Moved on
@@ -661,11 +666,11 @@ const PRIVATE_CHANNELS = String(process.env.BOT_PRIVATE_CHANNELS || "").trim().t
 function memoryFor(scope) {
   if (!PRIVATE_CHANNELS) {
     return { buffer: BUFFER_FILE, summaries: HISTORY_DIR, attachments: ATTACHMENTS_DIR, sessions: SESSION_FILE,
-      schedules: SCHEDULES_FILE, state: STATE_DIR, home: join(STATE_DIR, "home"), write: [STATE_DIR, HISTORY_DIR, ATTACHMENTS_DIR] };
+      schedules: SCHEDULES_VIEW, state: STATE_DIR, home: join(STATE_DIR, "home"), write: [STATE_DIR, HISTORY_DIR, ATTACHMENTS_DIR] };
   }
   const p = privateChannels.channelPaths(STATE_DIR, scope);
   return { buffer: p.buffer, summaries: p.summaries, attachments: p.attachments, sessions: p.sessions,
-    schedules: p.schedules, state: p.dir, dir: p.dir, home: p.home,
+    schedules: p.schedulesView, state: p.dir, dir: p.dir, home: p.home,
     // The channel folder is the bot's: a run reads it and writes only its jobs.
     // (Its home is bound separately, at the path the CLI expects.)
     read: [p.dir], write: [p.jobs] };
@@ -1528,7 +1533,7 @@ const botExchanges = new Map();
 // Where each PRIVATE_MEMORY_ENV variable points, in the same order: Discord
 // memory a board run is denied by path as well as by variable.
 function privateMemoryPaths() {
-  return [HISTORY_DIR, BUFFER_FILE, ATTACHMENTS_DIR, SESSION_FILE, SCHEDULES_FILE];
+  return [HISTORY_DIR, BUFFER_FILE, ATTACHMENTS_DIR, SESSION_FILE, SCHEDULES_VIEW];
 }
 // Everything a board run must not read. The private-memory paths can be moved
 // out of the state folder one by one, so they are named as well as the folder;
@@ -1551,10 +1556,8 @@ function boardReadDeniedPaths() {
   const roots = [CLAUDE_CWD, ...BOARD_POLICY.readPaths, ...BOARD_POLICY.writePaths, ...(botSettings()?.sandbox?.filesystem?.allowRead ?? [])];
   return [...boardDeniedPaths(), ...boardHistoryDenied(privateMemoryPaths()), ...boardSecretFiles(roots, BOARD_POLICY.secretFiles)];
 }
+LEGACY_STATE.push([join(HISTORY_DIR, "schedules.json"), SCHEDULES_FILE]); // a pre-2.1 file still reaches the state root, where scripts/import-schedules.mjs reads it
 LEGACY_STATE.push([join(__dirname, `.${BOT_NAME}-sessions.json`), SESSION_FILE]);
-// Moved out of the summaries directory: a schedule is the user's, and losing it
-// to a re-clone is the kind of failure nobody notices until a job stops firing.
-LEGACY_STATE.push([join(HISTORY_DIR, "schedules.json"), SCHEDULES_FILE]);
 LEGACY_STATE.push([join(HISTORY_DIR, ".checkpoints.json"), CHECKPOINT_FILE]);
 
 /**
@@ -2307,7 +2310,11 @@ function isSafeToRetryFresh(err) {
  * A scheduled job is a task, not a conversation — it has nothing to carry
  * forward. Each fire gets a clean session and leaves no trace in the channel's.
  */
-async function runClaude(prompt, channelId, reqLog, sendMessage, attachments = {}, channelName = "unknown", progress = null, opts = {}) {
+async function runClaude(...args) {
+  try { return await runClaudeRun(...args); }
+  finally { await ingestScheduleRequests().catch((e) => log.warn(`Schedule requests not applied: ${e.message}`)); }
+}
+async function runClaudeRun(prompt, channelId, reqLog, sendMessage, attachments = {}, channelName = "unknown", progress = null, opts = {}) {
   try { opts = { ...opts, jobRows: await jobRuns.listRuns({ limit: 500 }) }; }
   catch (e) { opts = { ...opts, jobHistoryError: e.message }; log.warn(`job history unavailable: ${e.message}`); }
   if (opts.ephemeral) {
@@ -2497,6 +2504,8 @@ function spawnClaude(prompt, channelId, reqLog, sendMessage, attachments, channe
     } else {
       try { privateChannels.writeJobView(STATE_DIR, jobRows, jobError); } catch (e) { log.warn(`job history view not written: ${e.message}`); }
     }
+    try { privateChannels.writeOwn(memory.schedules, JSON.stringify(scheduleJobsFor(memScope), null, 2) + "\n"); }
+    catch (e) { log.warn(`schedules view not written: ${e.message}`); }
     const built = runEnvFor(!opts.noBufferContext ? "session" : (narrowBoard ? "board" : "parity"), {
       channelId, runOutbox, tmpDir: boardTmp, memory,
       seat: seatRun?.runId ? { value: process.env[seatRun.keyEnv], runId: seatRun.runId } : null,
@@ -3105,63 +3114,118 @@ const SCHEDULE_CHECK_MS = envInt("BOT_SCHEDULE_CHECK_MS", 60_000, { min: 1000 })
 // In private mode each channel's jobs live in its own folder, the only file a
 // run in that channel can write; a job is taken only from its own channel's file.
 const droppedJobsLogged = new Set();
+const scheduleStore = new ScheduleStore({ bot: BOT_NAME, log });
+// The scope a job's key belongs to: its channel's folder name in private mode, none otherwise.
+const scheduleScopeOf = (channel) => (PRIVATE_CHANNELS ? privateChannels.scopeName(CHANNEL_GROUPS.scopeOf(channel)) : null);
+// Every scope this bot keeps jobs for: itself, or in private mode each active channel folder.
+function scheduleScopes() {
+  if (!PRIVATE_CHANNELS) return [null];
+  let names = [];
+  try { names = readdirSync(join(STATE_DIR, "channels")); } catch { /* no channels yet */ }
+  return names.filter((n) => /^[A-Za-z0-9._-]{1,120}$/.test(n));
+}
+async function ensureSchedulesLoaded() {
+  for (const scope of scheduleScopes()) if (!scheduleStore.isLoaded(scope)) await scheduleStore.load(scope);
+}
+// The jobs one run's view shows: those of its scope.
+function scheduleJobsFor(scope) {
+  const key = PRIVATE_CHANNELS ? privateChannels.scopeName(scope) : null;
+  return scheduleStore.jobs(key).filter((j) => !PRIVATE_CHANNELS || privateChannels.scopeName(CHANNEL_GROUPS.scopeOf(j.channel)) === key);
+}
 function loadSchedules() {
-  if (PRIVATE_CHANNELS) {
-    const { jobs, dropped, problems } = privateChannels.loadChannelSchedules(STATE_DIR, CHANNEL_GROUPS.scopeOf);
-    for (const d of problems) {
-      const k = `${d.file}:${d.problem}`;
-      if (droppedJobsLogged.has(k)) continue;
-      droppedJobsLogged.add(k);
-      log.warn(d, "Channel schedule file ignored: its jobs are not run until it is a plain file again");
+  const jobs = [];
+  for (const scope of scheduleScopes()) {
+    if (!scheduleStore.isLoaded(scope)) continue;
+    for (const j of scheduleStore.jobs(scope)) {
+      // A job is kept only in its own scope: a run cannot plant one in another scope by naming a channel there.
+      if (PRIVATE_CHANNELS && scheduleScopeOf(j.channel) !== scope) {
+        const k = `${scope}:${j.id}`;
+        if (!droppedJobsLogged.has(k)) {
+          droppedJobsLogged.add(k);
+          log.warn({ scope, id: j?.id, channel: j?.channel }, "Scheduled job ignored: it names a channel other than the one whose list holds it");
+        }
+        continue;
+      }
+      jobs.push(j);
     }
-    for (const d of dropped) {
-      const k = `${d.file}:${d.id}`;
-      if (droppedJobsLogged.has(k)) continue;
-      droppedJobsLogged.add(k);
-      log.warn(d, "Scheduled job ignored: it names a channel other than the one whose file holds it");
-    }
-    return jobs;
   }
-  try {
-    return JSON.parse(readFileSync(SCHEDULES_FILE, "utf8"));
-  } catch {
-    return [];
-  }
+  return jobs;
 }
 
-function saveSchedules(schedules) {
-  if (PRIVATE_CHANNELS) {
-    // A scope folder whose file cannot be read is left as it is, and said so.
-    const { skipped } = privateChannels.saveChannelSchedules(STATE_DIR, schedules, CHANNEL_GROUPS.scopeOf);
-    for (const d of skipped) log.warn(d, "Channel schedule file not written: it could not be read, so it is left as it is");
-    return;
-  }
-  writeFileSync(SCHEDULES_FILE, JSON.stringify(schedules, null, 2) + "\n");
+/** Apply one change to a job's scope now, and record it. A scope that never loaded is left as it is. */
+function changeSchedules(scope, op) {
+  try { scheduleStore.mutate(scope, op); } catch (e) { log.warn({ scope }, `Schedules not changed: ${e.message}`); return false; }
+  scheduleStore.flush(scope).catch((e) => log.warn(`Schedules not saved: ${e.message}`));
+  return true;
 }
 
 /**
- * Every write inside a tick re-reads the file first.
+ * A change is an operation on the list, never the whole list written back: the record
+ * is written by compare-and-set and a conflict re-applies the operation to what it
+ * finds, so a job added in the meantime is never lost.
  *
- * A run can CREATE a job while it is running — that is exactly how a self-paced
- * watch re-arms itself — and the scheduler's in-memory array predates that
- * write. Saving the stale array would delete the follow-up the run just
- * scheduled, and the watch would end without anyone noticing it had stopped.
+ * The scheduler's in-memory array predates a run's own writes, so saving it whole
+ * would delete the follow-up the run just scheduled and the watch would end
+ * without anyone noticing it had stopped.
  */
+/**
+ * A run books or removes a job by leaving a request beside its schedules view (lib/schedule-requests.js).
+ * Applied here after the run: each request becomes an operation on the scope's list, recorded
+ * in the company record, and its file is deleted only once the record holds it.
+ */
+const appliedScheduleRequests = new Map(); // file -> { scope, dir, name, dirId }
+const refusedRequestsLogged = new Set();
+async function ingestScheduleRequests() {
+  await ensureSchedulesLoaded();
+  for (const scope of scheduleScopes()) {
+    if (!scheduleStore.isLoaded(scope)) continue;
+    const view = PRIVATE_CHANNELS ? privateChannels.channelPaths(STATE_DIR, scope).schedulesView : SCHEDULES_VIEW;
+    const reqDir = scheduleRequests.requestsDirFor(view);
+    const { requests, refused, dirId } = scheduleRequests.readRequests(reqDir);
+    for (const d of refused) {
+      if (refusedRequestsLogged.has(d.file)) continue;
+      refusedRequestsLogged.add(d.file);
+      log.warn(d, "Schedule request ignored");
+    }
+    for (const { file, name, request } of requests) {
+      if (appliedScheduleRequests.has(file)) continue;
+      if (request.op === "add") {
+        const job = request.job;
+        if (PRIVATE_CHANNELS && scheduleScopeOf(job.channel) !== scope) {
+          log.warn({ scope, id: job.id }, "Schedule request ignored: it names a channel outside this scope");
+          appliedScheduleRequests.set(file, { scope, dir: reqDir, name, dirId }); // refused for good: its file goes with the rest
+          continue;
+        }
+        changeSchedules(scope, (jobs) => (jobs.some((j) => sameJob(j, job)) ? jobs : [...jobs, job]));
+      } else {
+        // Only a job of this scope is the run's to remove: a foreign row sharing the id stays.
+        changeSchedules(scope, (jobs) => scheduleRequests.withoutOwn(jobs, request.id, (j) => !PRIVATE_CHANNELS || scheduleScopeOf(j.channel) === scope));
+      }
+      appliedScheduleRequests.set(file, { scope, dir: reqDir, name, dirId });
+    }
+    if (await scheduleStore.flush(scope)) {
+      for (const [file, a] of [...appliedScheduleRequests]) {
+        if (a.scope !== scope) continue;
+        try { scheduleRequests.deleteRequest(a.dir, a.name, a.dirId); }
+        catch (e) { if (e.code !== "ENOENT") log.warn({ file, err: e.message }, "Schedule request file not deleted"); }
+        appliedScheduleRequests.delete(file);
+      }
+    }
+  }
+}
+
 // A job is its id AND its channel. Two channels can hold the same id (a private
 // channel writes its own file, and its ids are its own to choose), so matching
 // on id alone would let one channel's job remove or stamp another's.
 const sameJob = (a, b) => a.id === b.id && String(a.channel ?? "") === String(b.channel ?? "");
 
 function removeScheduledJob(job) {
-  saveSchedules(loadSchedules().filter((j) => !sameJob(j, job)));
+  changeSchedules(scheduleScopeOf(job.channel), (jobs) => jobs.filter((j) => !sameJob(j, job)));
 }
 
 function stampLastRun(job, key) {
-  const current = loadSchedules();
-  const found = current.find((j) => sameJob(j, job));
-  if (!found) return;
-  found._lastRun = key;
-  saveSchedules(current);
+  if (!loadSchedules().some((j) => sameJob(j, job))) return;
+  changeSchedules(scheduleScopeOf(job.channel), (jobs) => jobs.map((j) => (sameJob(j, job) ? { ...j, _lastRun: key } : j)));
 }
 
 /**
@@ -3187,10 +3251,9 @@ const WAKE_CARRY_MAX_MS = envInt("BOT_WAKE_CARRY_MAX_MS", SESSION_TIMEOUT_MS, { 
  * exactly on the minute gets reported twice.
  */
 function claimWakeJob(wanted) {
-  const current = loadSchedules();
-  const job = current.find((j) => sameJob(j, wanted));
+  const job = loadSchedules().find((j) => sameJob(j, wanted));
   if (!job) return null;
-  saveSchedules(current.filter((j) => !sameJob(j, wanted)));
+  changeSchedules(scheduleScopeOf(job.channel), (jobs) => jobs.filter((j) => !sameJob(j, wanted)));
   return job;
 }
 
@@ -3467,6 +3530,12 @@ async function runWakeJob(job, sLog, explicitRelease = null, { detach = false } 
   // is the RUN's job — it has the schedule skill and the exact command in its
   // prompt.
   if (!claimWakeJob(job)) return false;
+  // The claim is in the company record before the run starts, or the job goes back and waits for the next tick.
+  if (!(await scheduleStore.flush(scheduleScopeOf(job.channel)))) {
+    changeSchedules(scheduleScopeOf(job.channel), (jobs) => (jobs.some((j) => sameJob(j, job)) ? jobs : [...jobs, job]));
+    sLog.warn({ id: job.id }, "Wake job claim not recorded — leaving it queued so the next tick retries");
+    return false;
+  }
   if (release?.kind === "signal") recentSignals.delete(release.name);
 
   const chainStarted = Date.parse(job.chainStartedAt || job.createdAt || job.runAt);
@@ -3512,6 +3581,9 @@ async function runScheduledJobs() {
   schedulerRunning = true;
 
   try {
+    await ensureSchedulesLoaded();
+    await scheduleStore.flushAll();
+    await ingestScheduleRequests().catch((e) => log.warn(`Schedule requests not applied: ${e.message}`));
     const schedules = loadSchedules();
     if (!schedules.length) return;
 
@@ -3593,10 +3665,11 @@ async function runScheduledJobs() {
 }
 
 // First Way: validate jobs on load — log what's scheduled so misconfigurations are visible immediately
-function validateSchedulesOnStartup() {
+async function validateSchedulesOnStartup() {
+  await ensureSchedulesLoaded();
   const schedules = loadSchedules();
   if (!schedules.length) {
-    log.info({ file: SCHEDULES_FILE }, "Job scheduler enabled (no jobs)");
+    log.info({ configured: scheduleStore.configured }, "Job scheduler enabled (no jobs)");
     return;
   }
   for (const job of schedules) {
@@ -3616,9 +3689,9 @@ function validateSchedulesOnStartup() {
     }
     log.info({ id: job.id, fires: describeCron(job.cron), expires: job.expires || "never", prompt: job.prompt.substring(0, 60) }, "Scheduled job loaded");
   }
-  log.info({ file: SCHEDULES_FILE, count: schedules.length }, "Job scheduler enabled");
+  log.info({ count: schedules.length }, "Job scheduler enabled");
 }
-validateSchedulesOnStartup();
+validateSchedulesOnStartup().catch((e) => log.warn(`Schedules not loaded at startup: ${e.message}`));
 
 // Start scheduler check loop
 setInterval(runScheduledJobs, SCHEDULE_CHECK_MS);

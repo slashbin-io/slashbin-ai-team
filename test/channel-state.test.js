@@ -90,6 +90,41 @@ const quiet = { warn() {}, info() {} };
     assert.ok(t.seenIds().has("333"));
   });
 
+  await check("a channel seen before the first load still imports the old file once (R1)", async () => {
+    const f = join(dir, "seen-r1.json");
+    writeFileSync(f, JSON.stringify(["old-dm"]));
+    const a = make({ bot: "r1", legacySeenFile: f });
+    await a.recordSeen("new-channel");
+    const b = make({ bot: "r1" });
+    await b.loadSeen();
+    assert.deepStrictEqual([...b.seenIds()].sort(), ["new-channel", "old-dm"]);
+  });
+
+  await check("an early change, then a load, loses nothing (R3)", async () => {
+    const f = join(dir, "seen-r3.json");
+    writeFileSync(f, JSON.stringify(["a"]));
+    const a = make({ bot: "r3", legacySeenFile: f });
+    await a.recordSeen("b");
+    assert.ok(await a.loadSeen());
+    assert.deepStrictEqual([...a.seenIds()].sort(), ["a", "b"]);
+  });
+
+  await check("an existing record stays authoritative over the old file (R2)", async () => {
+    const f = join(dir, "seen-r2.json");
+    const first = make({ bot: "r2" });
+    await first.recordSeen("kept");
+    writeFileSync(f, JSON.stringify(["stale"]));
+    const a = make({ bot: "r2", legacySeenFile: f });
+    await a.recordSeen("more");
+    await a.loadSeen();
+    assert.deepStrictEqual([...a.seenIds()].sort(), ["kept", "more"]);
+  });
+
+  await check("loadSeen reports false when the record cannot be read", async () => {
+    const d = mk(downEnv(), { bot: "r4" });
+    assert.strictEqual(await d.loadSeen(), false);
+  });
+
   await check("an unconfigured bot says so and reads nothing as empty", async () => {
     const s = mk({});
     assert.strictEqual(s.configured, false);

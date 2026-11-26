@@ -3025,7 +3025,10 @@ async function runSummarizer() {
   if (summarizing) return;
   summarizing = true;
   try {
-    if (SUMMARIZE_SEEN) await channelState.loadSeen();
+    if (SUMMARIZE_SEEN && !(await channelState.loadSeen())) {
+      log.warn("Summarizer cycle skipped: the seen-channels record could not be read");
+      return;
+    }
     if (channelsToSummarize().length === 0) return;
     await summarizeCycle();
   } finally {

@@ -9,7 +9,7 @@ work. Assign tasks through **Paperclip**, talk through **Discord**, or use both.
 This is the harness behind the AI team building [Slashbin](https://www.slashbin.io?utm_source=github&utm_medium=readme&utm_campaign=ai-team).
 We're sharing it so you can run your own. **Free, self-hosted, MIT licensed.**
 
-[![CI](https://github.com/xrgarcia/slashbin-ai-team/actions/workflows/ci.yml/badge.svg)](https://github.com/xrgarcia/slashbin-ai-team/actions/workflows/ci.yml)
+[![CI](https://github.com/slashbin-io/slashbin-ai-team/actions/workflows/ci.yml/badge.svg)](https://github.com/slashbin-io/slashbin-ai-team/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **[Start with Paperclip →](docs/paperclip.md)** ·
@@ -136,7 +136,7 @@ CLI, and a machine to run the harness. The runtime guide lists
 [additional sandbox prerequisites](docs/runtimes.md).
 
 ```bash
-git clone https://github.com/xrgarcia/slashbin-ai-team.git
+git clone https://github.com/slashbin-io/slashbin-ai-team.git
 cd slashbin-ai-team
 npm install
 ```
@@ -191,7 +191,7 @@ and agents a way to receive, transform, and deliver business events. If your nex
 project involves connecting those systems, that's where it fits.
 
 The implementation part of our engineering workflow is also open source:
-[Slashbin AI Foreman](https://github.com/xrgarcia/slashbin-ai-foreman) picks up
+[Slashbin AI Foreman](https://github.com/slashbin-io/slashbin-ai-foreman) picks up
 approved issues and opens pull requests. Connect the roles and workflow you need.
 
 ## Documentation table of contents

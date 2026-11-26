@@ -23,7 +23,7 @@ const { isNothingToReport } = require("./lib/nothing-to-report");
 const { isNonReply, isSyntheticMessage, nonReplyCorrection } = require("./lib/non-reply");
 const { isWakeJob, buildWakePrompt } = require("./lib/wake");
 const { signalRefusal, normalizeSignal, tokenMatches: bridgeTokenMatches } = require("./lib/bridge-signal");
-const { createOwnerAsks, createOwnerAskStore, announceAsk, announceGrantAsks, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
+const { createOwnerAsks, createOwnerAskStore, announceAsk, announceGrantAsks, recoverUnsentAsks, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
 const { parseRunnerRefusal, detectRefusal, DEFAULT_RULES: RUNNER_REFUSAL_DEFAULTS } = require("./lib/refusal");
 const { parseRoutineRunner, createRoutineRunner } = require("./lib/routine-runner");
 const { parseAlertConfig, isAlert, createAlertQueue } = require("./lib/alert-runner");
@@ -764,10 +764,39 @@ const PAPERCLIP_BOARDS = SURFACES.paperclip ? CONFIGURED_BOARDS : [];
 // OWNER_RELAYS maps a board to the poller's relay.
 let OWNER_ASKS = null;
 const OWNER_RELAYS = {};
+// The bot's own copy of an ask, searched forward through the channel's history from just before the binding was
+// created, however many pages that takes. A fetch that fails throws: the caller then sends nothing.
+const DISCORD_EPOCH = 1420070400000n;
+const findSentAsk = async (channel, binding, text) => {
+  const from = Math.max(0, Date.parse(binding.createdAt) - 60_000);
+  if (!Number.isFinite(from)) throw new Error("the ask has no creation time");
+  let after = String((BigInt(from) - DISCORD_EPOCH) << 22n);
+  for (;;) {
+    const page = await channel.messages.fetch({ limit: 100, after });
+    if (!page.size) return null;
+    const hit = page.find((m) => m.author?.id === client.user?.id && typeof m.content === "string" && m.content.includes(text));
+    if (hit) return hit;
+    after = page.reduce((top, m) => (BigInt(m.id) > BigInt(top) ? m.id : top), after);
+  }
+};
+// Settled once at startup, before any reply is routed (see the two routeReply calls in the message handler).
+let ownerAsksRecovery = Promise.resolve();
 const openOwnerAsks = async () => {
   try {
     const store = createOwnerAskStore({ store: channelState.store, bot: BOT_NAME, legacyFile: join(STATE_DIR, "owner-asks.json"), log });
-    if (await store.open()) OWNER_ASKS = createOwnerAsks({ store });
+    if (await store.open()) {
+      OWNER_ASKS = createOwnerAsks({ store });
+      ownerAsksRecovery = (async () => {
+        if (!client) return;
+        if (!client.isReady()) await new Promise((res) => client.once("ready", res));
+        const n = await recoverUnsentAsks({ registry: OWNER_ASKS, findSent: async (b, text) => {
+          const ch = await resolveBridgeChannel(b.channelId, { ownerAsk: true });
+          if (!ch) throw new Error("channel unreachable");
+          return findSentAsk(ch, b, text);
+        } });
+        if (n) log.info({ adopted: n }, "Owner asks sent before a restart recovered from the channel");
+      })().catch((err) => log.warn({ err: err.message }, "Owner-ask recovery did not finish"));
+    }
     else log.error("Owner-asks state not readable from the company record — asks to a person are not announced on Discord until it is");
   } catch (err) {
     log.error({ err: err.message }, "Owner-asks state unreadable — asks to a person are not announced on Discord until it is fixed");
@@ -1753,6 +1782,7 @@ client?.on("messageCreate", async (msg) => {
   // The one exception to "mention or monitored": the person an open ask was put
   // to, answering it in the channel it was announced in (a bare yes/no, or a
   // reply to the announcement). Nothing else in that channel is let in.
+  await ownerAsksRecovery;
   const isAskAnswer = !isDM && !msg.author.bot && OWNER_ASKS
     && routeReply({ registry: OWNER_ASKS, channelId: msg.channel.id, text: msg.content, referenceId: msg.reference?.messageId ?? null, userId: msg.author.id }).kind !== "none";
   if (!isDM && !isMentioned && !isMonitored && !isAskAnswer) return;
@@ -3876,11 +3906,7 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
         if (!channel) return false;
         const { binding, posted } = await announceAsk({ registry: OWNER_ASKS, ask, board: board.id ?? null, channelId,
           answerers,
-          // The ask may have gone out just before a restart: find our own copy in the recent messages.
-          findSent: async (text) => {
-            const recent = await channel.messages.fetch({ limit: 50 });
-            return recent.find((m) => m.author?.id === client.user?.id && typeof m.content === "string" && m.content.includes(text)) ?? null;
-          },
+          findSent: (b, text) => findSentAsk(channel, b, text),
           send: (content) => channel.send({ content: `${escalation.mention ? `${escalation.mention} ` : ""}${content}`, allowedMentions: { parse: ["users"] } }) });
         if (posted) pLog.info({ paperclipTask: ask.cardIdentifier, channelId, messageId: binding.discordMessageId }, "Paperclip ask to a person — announced on Discord");
         return Boolean(binding.discordMessageId);

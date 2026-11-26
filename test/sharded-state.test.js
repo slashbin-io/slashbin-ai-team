@@ -11,7 +11,7 @@ const { startReceiver } = require("./fake-receiver");
 const { ScheduleStore } = require("../lib/schedule-store");
 const { createPaperclipStore, splitState, joinState } = require("../lib/paperclip-state");
 const { ShardedRecord } = require("../lib/sharded-record");
-const { createOwnerAsks, createOwnerAskStore, announceAsk } = require("../lib/owner-asks");
+const { createOwnerAsks, createOwnerAskStore, announceAsk, recoverUnsentAsks } = require("../lib/owner-asks");
 
 let passed = 0, failed = 0;
 async function check(name, fn) {
@@ -282,8 +282,41 @@ const bigState = (n) => {
     await st2.open();
     const reg2 = createOwnerAsks({ store: st2 });
     const r2 = await announceAsk({ registry: reg2, ask, channelId: "123456789012345678",
-      send: async () => { sends++; return { id: "again" }; }, findSent: async (text) => channel.find((m) => m.text === text) ?? null });
+      send: async () => { sends++; return { id: "again" }; }, findSent: async (b, text) => channel.find((m) => m.text === text) ?? null });
     assert.deepStrictEqual([r2.binding.discordMessageId, sends], ["orig", 0]);
+  });
+
+  await check("a history lookup that errors sends nothing, and startup recovery adopts the original", async () => {
+    const st = createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-lookup", log: quiet });
+    assert.ok(await st.open());
+    const reg = createOwnerAsks({ store: st });
+    const ask = { ownerCardId: "own-11", cardIdentifier: "T-11", issueId: "i-11", decision: "Approve?" };
+    let sends = 0;
+    const send = async () => { sends++; return { id: "new" }; };
+    const r1 = await announceAsk({ registry: reg, ask, channelId: "123456789012345678", send, findSent: async () => { throw new Error("history down"); } });
+    assert.deepStrictEqual([r1.posted, r1.binding.discordMessageId, sends], [false, null, 0]);
+    const seen = [];
+    assert.strictEqual(await recoverUnsentAsks({ registry: reg, findSent: async (b) => { seen.push(b.createdAt); throw new Error("down"); } }), 0);
+    assert.strictEqual(reg.get(reg.keyOf(null, "own-11")).discordMessageId, null);
+    assert.strictEqual(await recoverUnsentAsks({ registry: reg, findSent: async () => ({ id: "orig" }) }), 1);
+    assert.strictEqual(reg.byMessage("123456789012345678", "orig")?.cardIdentifier, "T-11");
+    const r2 = await announceAsk({ registry: reg, ask, channelId: "123456789012345678", send });
+    assert.deepStrictEqual([r2.posted, sends], [false, 0]);
+  });
+
+  await check("a failed import leaves the old file in place and the collection closed", async () => {
+    const file = join(dir, "keep.json");
+    writeFileSync(file, JSON.stringify({ seq: 5 }));
+    const store = mkStore();
+    store.set = async () => { throw new Error("record down"); };
+    assert.strictEqual(await createPaperclipStore({ store, bot: "b", name: "keep", legacyFile: file, log: quiet }).open(), false);
+    assert.strictEqual(JSON.parse(readFileSync(file, "utf8")).seq, 5);
+  });
+
+  await check("the recovery search has no fixed message count and is done before replies route", () => {
+    const src = readFileSync(join(__dirname, "..", "bot.js"), "utf8");
+    assert.ok(!/limit:\s*50\b/.test(src));
+    assert.ok(/await ownerAsksRecovery;\s*\n\s*const isAskAnswer/.test(src));
   });
 
   await check("the poller launches nothing until its state is in the record", () => {

@@ -3,7 +3,7 @@
  * and a run books jobs by leaving request files (lib/schedule-requests.js).
  * Everything runs against a loopback stand-in for the record and a temporary folder.
  */
-const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, existsSync, readdirSync, readFileSync } = require("fs");
+const { renameSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, existsSync, readdirSync, readFileSync } = require("fs");
 const { join } = require("path");
 const os = require("os");
 const assert = require("assert");
@@ -246,7 +246,8 @@ const ids = (jobs) => jobs.map((j) => j.id);
     const read2 = requests.readRequests(reqDir);
     const victimDir = join(base, "victim"); mkdirSync(victimDir);
     writeFileSync(join(victimDir, "a.json"), "PROTECTED");
-    rmSync(reqDir, { recursive: true }); symlinkSync(victimDir, reqDir);
+    renameSync(reqDir, join(base, "orig")); // kept, so its inode cannot be reused by the folders made later
+    symlinkSync(victimDir, reqDir);
     assert.throws(() => requests.deleteRequest(reqDir, "a.json", read2.dirId));
     assert.strictEqual(readFileSync(join(victimDir, "a.json"), "utf8"), "PROTECTED");
     // a swap for another real folder is refused too

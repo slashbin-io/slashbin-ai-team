@@ -972,7 +972,7 @@ const poller = (b, answer) => createPaperclipPoller({
   await check("bot.js: every board's key is kept from Claude, and an extra board has its own state and sessions", () => {
     assert.match(bot, /connectorKeys: \[\.\.\.boardKeyEnvs\(process\.env\), \.\.\.escalateBearer\(\), \.\.\.ownerKeyEnv\(\)\],/);
     assert.match(bot, /const tag = board\.id \? `paperclip-\$\{board\.id\}` : "paperclip";/);
-    assert.match(bot, /stateFile: join\(STATE_DIR, `\$\{tag\}\.json`\)/);
+    assert.match(bot, /name: tag, legacyFile: join\(STATE_DIR, `\$\{tag\}\.json`\)/);
     assert.match(bot, /runClaude\(prompt, `\$\{tag\}-\$\{issue\.identifier\}`/);
   });
 

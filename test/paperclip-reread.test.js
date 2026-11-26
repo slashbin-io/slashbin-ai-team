@@ -1401,7 +1401,7 @@ const wake = (b, id) => {
     // waitKept: the refusal set, then saved, before anything is returned.
     const [wa, wb] = body(src.indexOf("function waitKept("));
     const wk = src.slice(wa, wb);
-    const set = wk.indexOf("depsRefused.set("), save = wk.indexOf("saveState(stateFile, state)"), ret = wk.indexOf("return ");
+    const set = wk.indexOf("depsRefused.set("), save = wk.indexOf("saveState(stateStore, state)"), ret = wk.indexOf("return ");
     assert.ok(set >= 0 && save > set && ret > save, "waitKept does not save the refusal before returning the write");
     // routeGate: every write of the kept wait comes after waitKept(.
     const [ga, gb] = body(src.indexOf("async function routeGate("));

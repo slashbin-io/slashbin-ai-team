@@ -19,7 +19,10 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+
+// Keeps the bridge state and owner asks in a file for the tests that restart a poller (see the file).
+const PRELOAD = resolve("test", "support", "file-state.js");
 
 // No arguments runs every test/*.test.js and *.test.mjs, so a new test file is in CI the moment it
 // exists. A hand-kept list once left a credential-isolation regression out of CI
@@ -40,7 +43,7 @@ const clean = () => rmSync(scratch, { recursive: true, force: true });
 let code = 0;
 try {
   for (const file of files) {
-    const r = spawnSync(process.execPath, [file], { stdio: "inherit", env });
+    const r = spawnSync(process.execPath, ["--require", PRELOAD, file], { stdio: "inherit", env });
     code = r.status ?? 1;
     if (code !== 0) break;
   }

@@ -26,11 +26,12 @@ async function check(label, fn) {
 }
 
 /** A clean env: no DISCORD_TOKEN or PAPERCLIP_* leaks in from the shell running the tests. */
+let SHARED_RECORD = {};   // the loopback company record every board bot below is pointed at
 function botEnv(dir, name, port, extra = {}) {
   const env = {};
   for (const k of ["PATH", "HOME", "USER", "SHELL", "LANG"]) if (process.env[k]) env[k] = process.env[k];
   return { ...env, BOT_NAME: name, WS_PORT: String(port), CLAUDE_CWD: join(dir, "cwd"), BOT_STATE_DIR: join(dir, "state"),
-    BOT_HISTORY_DIR: join(dir, "history"), SUMMARIZE_INTERVAL_MS: "0", ...extra };
+    BOT_HISTORY_DIR: join(dir, "history"), SUMMARIZE_INTERVAL_MS: "0", ...(extra.PAPERCLIP_API_KEY ? SHARED_RECORD : {}), ...extra };
 }
 
 /** Run bot.js until it exits or `until(output)` holds; resolves { code, out, child }. */
@@ -60,6 +61,7 @@ function waitFor(cond, ms = 15000) {
 }
 
 (async () => {
+  SHARED_RECORD = (await require("./fake-receiver").startReceiver()).env;
   const dir = mkdtempSync(join(tmpdir(), "paperclip-only-"));
   for (const d of ["cwd", "state", "history", "run"]) mkdirSync(join(dir, d));
   const run = join(dir, "run"); // the bot's working directory: an empty folder, so no dotenv file is loaded

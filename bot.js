@@ -13,6 +13,7 @@ const { createWriteStream } = require("fs");
 const pino = require("pino");
 const summarizeCore = require("./lib/summarize-core");
 const { createChannelState } = require("./lib/channel-state");
+const { createPaperclipStore } = require("./lib/paperclip-state");
 const { stallMessages } = require("./lib/stall-message");
 const { budgetContext, clampArgs, DEFAULT_CONTEXT_MAX_BYTES } = require("./lib/argv-budget");
 const { buildRunEnv, resolvePermissionMode, VALID_MODES, attachmentReadRule, summarizerArgs, PRIVATE_MEMORY_ENV, boardAccessKey, boardRunKind, privateMemoryDeny, boardArgs, boardSettings, boardCwdDenied, boardSecretFiles, boardHistoryDenied, resolveBoardPolicy, boardPolicyProblems, boardEngineeringRules, discordCredential, MIN_CREDENTIAL_CHARS, expand: expandPath } = require("./lib/permission-mode");
@@ -22,7 +23,7 @@ const { isNothingToReport } = require("./lib/nothing-to-report");
 const { isNonReply, isSyntheticMessage, nonReplyCorrection } = require("./lib/non-reply");
 const { isWakeJob, buildWakePrompt } = require("./lib/wake");
 const { signalRefusal, normalizeSignal, tokenMatches: bridgeTokenMatches } = require("./lib/bridge-signal");
-const { createOwnerAsks, announceAsk, announceGrantAsks, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
+const { createOwnerAsks, createOwnerAskStore, announceAsk, announceGrantAsks, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
 const { parseRunnerRefusal, detectRefusal, DEFAULT_RULES: RUNNER_REFUSAL_DEFAULTS } = require("./lib/refusal");
 const { parseRoutineRunner, createRoutineRunner } = require("./lib/routine-runner");
 const { parseAlertConfig, isAlert, createAlertQueue } = require("./lib/alert-runner");
@@ -757,15 +758,21 @@ for (const note of SURFACES.notes) log.warn(note);
 const DISCORD_ON = SURFACES.discord;
 const PAPERCLIP_BOARDS = SURFACES.paperclip ? CONFIGURED_BOARDS : [];
 // Asks to a person, announced on Discord and answered there (lib/owner-asks.js).
-// The store is read whole or the feature is off: read as empty it would
-// announce every ask again. OWNER_RELAYS maps a board to the poller's relay.
+// The bindings live in the company record, sharded (lib/owner-asks.js createOwnerAskStore),
+// and are read whole or the feature is off: read as empty it would announce every ask
+// again. The old local file is read once to seed the record. Opened with the boards below.
+// OWNER_RELAYS maps a board to the poller's relay.
 let OWNER_ASKS = null;
 const OWNER_RELAYS = {};
-if (PAPERCLIP_BOARDS.length) {
-  try { OWNER_ASKS = createOwnerAsks({ file: join(STATE_DIR, "owner-asks.json") }); } catch (err) {
+const openOwnerAsks = async () => {
+  try {
+    const store = createOwnerAskStore({ store: channelState.store, bot: BOT_NAME, legacyFile: join(STATE_DIR, "owner-asks.json"), log });
+    if (await store.open()) OWNER_ASKS = createOwnerAsks({ store });
+    else log.error("Owner-asks state not readable from the company record — asks to a person are not announced on Discord until it is");
+  } catch (err) {
     log.error({ err: err.message }, "Owner-asks state unreadable — asks to a person are not announced on Discord until it is fixed");
   }
-}
+};
 const PAPERCLIP_EVENTS = eventsSetting(process.env.PAPERCLIP_EVENTS);
 if (PAPERCLIP_BOARDS.length && PAPERCLIP_EVENTS.problem) log.warn(PAPERCLIP_EVENTS.problem);
 if (!DISCORD_ON) log.info(discordOffReason(SURFACES));
@@ -3760,7 +3767,8 @@ if (SURFACES.paperclipRequired && (PAPERCLIP_CWD_DENIED || BOARD_POLICY_PROBLEMS
   clearReady();
   process.exit(EXIT_CONFIG);
 }
-if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.length) {
+if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.length) (async () => {
+  await openOwnerAsks();
   if (PAPERCLIP_BOARDS.length) {
     const { execution, source, tools, allow, readPaths, writePaths, network } = BOARD_POLICY;
     // On Codex the tool names are not used: the run is the profile in lib/runtime/codex.js.
@@ -3799,10 +3807,19 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
       pLog.error({ board: board.id ?? null }, "PAPERCLIP_RESOLVE_OWN is on, but this board has no escalate action and no escalateTo — its board tasks are off");
       continue;
     }
+    // The bridge state lives in the company record, sharded by card; the old local file seeds it once.
+    const stateStore = createPaperclipStore({ store: channelState.store, bot: BOT_NAME, name: tag, legacyFile: join(STATE_DIR, `${tag}.json`), log: pLog });
+    let stateOpen = false;
+    try { stateOpen = await stateStore.open(); } catch (err) { pLog.error({ err: err.message }, "Paperclip state unreadable"); }
+    if (!stateOpen) {
+      // Stay off rather than forget what was answered. Discord is unaffected.
+      pLog.error("Paperclip state not readable from the company record — board tasks are off until it is");
+      continue;
+    }
     const poller = createPaperclipPoller({
       url: board.url,
       apiKey: board.apiKey,
-      stateFile: join(STATE_DIR, `${tag}.json`),
+      stateStore,
       log: pLog,
       resumeInterrupted: process.env.PAPERCLIP_RESUME_INTERRUPTED === "1",
       intake: BOARD_TRIGGERS.intake,
@@ -3924,7 +3941,7 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
     });
     pLog.info({ url: board.url, promptChannel: promptChannel ?? null, events: eventsOn ? "on" : "off" }, "Paperclip connector on");
   }
-}
+})().catch((err) => log.error({ err: err.message }, "Paperclip boards failed to start"));
 
 // --- Process error handlers ---
 process.on("unhandledRejection", (reason) => {

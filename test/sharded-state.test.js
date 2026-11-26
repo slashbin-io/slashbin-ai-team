@@ -10,6 +10,7 @@ const assert = require("assert");
 const { startReceiver } = require("./fake-receiver");
 const { ScheduleStore } = require("../lib/schedule-store");
 const { createPaperclipStore, splitState, joinState } = require("../lib/paperclip-state");
+const { ShardedRecord } = require("../lib/sharded-record");
 const { createOwnerAsks, createOwnerAskStore, announceAsk } = require("../lib/owner-asks");
 
 let passed = 0, failed = 0;
@@ -152,6 +153,104 @@ const bigState = (n) => {
     assert.strictEqual(createOwnerAsks({ store: st }).get("default:c1").discordMessageId, "m");
     const bad = join(dir, "owner-bad.json"); writeFileSync(bad, "{nope");
     assert.strictEqual(await createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-bad", legacyFile: bad, log: quiet }).open(), false);
+  });
+
+  const brokenWrites = (store) => { const set = store.set; store.set = async () => { throw new Error("record down"); }; return () => { store.set = set; }; };
+
+  await check("many changes to one bucket cost one write: a flush coalesces", async () => {
+    const r = new ShardedRecord({ store: mkStore(), bot: "b", name: "coal", buckets: 2, log: quiet });
+    assert.ok(await r.open());
+    rec.log.length = 0;
+    for (let i = 0; i < 300; i++) r.put(`id-${i}`, { n: i });
+    assert.ok(await r.flush());
+    const puts = rec.log.filter((l) => /^PUT .*state\/b\/coal-/.test(l) && !/conflict/.test(l));
+    assert.ok(puts.length <= 2, `${puts.length} writes for 300 changes: ${puts.join(" | ")}`);
+    const t = new ShardedRecord({ store: mkStore(), bot: "b", name: "coal", buckets: 2, log: quiet });
+    assert.ok(await t.open());
+    assert.strictEqual(t.map.size, 300);
+  });
+
+  await check("an entry too big for its bucket gets its own document, written before the pointer, and reads back", async () => {
+    const r = new ShardedRecord({ store: mkStore(), bot: "b", name: "ovf", buckets: 2, log: quiet });
+    assert.ok(await r.open());
+    rec.log.length = 0;
+    const huge = { list: Array.from({ length: 6000 }, (_, i) => `run-${i}-aaaaaaaa`) };
+    r.put("huge", huge); r.put("small", { n: 1 });
+    assert.ok(await r.flush());
+    const puts = rec.log.filter((l) => l.startsWith("PUT") && !/conflict/.test(l));
+    const own = puts.findIndex((l) => /ovf-x-/.test(l)), bucket = puts.findIndex((l) => /ovf-\d\d/.test(l));
+    assert.ok(own >= 0 && bucket > own, puts.join(" | "));
+    assert.ok(Math.max(...shardRows("ovf").filter(([k]) => !/-x-/.test(k)).map(([, row]) => JSON.stringify(row.value).length)) < 9000, "the bucket holds a pointer, not the entry");
+    const t = new ShardedRecord({ store: mkStore(), bot: "b", name: "ovf", buckets: 2, log: quiet });
+    assert.ok(await t.open());
+    assert.deepStrictEqual(t.get("huge"), huge);
+    assert.deepStrictEqual(t.get("small"), { n: 1 });
+    for (const k of [...rec.rows.keys()].filter((k) => /ovf-x-/.test(k))) rec.rows.delete(k);
+    assert.strictEqual(await new ShardedRecord({ store: mkStore(), bot: "b", name: "ovf", buckets: 2, log: quiet }).open(), false, "a pointer to nothing leaves it closed");
+  });
+
+  await check("open() is true only once the import is in the record; a failed commit leaves it closed and the next open finishes it", async () => {
+    const file = join(dir, "mig.json");
+    writeFileSync(file, JSON.stringify({ answeredAsks: ["m-a:1"], seq: 4 }));
+    const store = mkStore();
+    const restore = brokenWrites(store);
+    const a = createPaperclipStore({ store, bot: "b", name: "mig", legacyFile: file, log: quiet });
+    assert.strictEqual(await a.open(), false);
+    restore();
+    const b = createPaperclipStore({ store: mkStore(), bot: "b", name: "mig", legacyFile: file, log: quiet });
+    assert.ok(await b.open());
+    writeFileSync(file, "{gone");
+    const c = createPaperclipStore({ store: mkStore(), bot: "b", name: "mig", legacyFile: file, log: quiet });
+    assert.ok(await c.open(), "committed: the file is not read again for a bucket that exists");
+    assert.strictEqual(c.read().seq, 4);
+  });
+
+  await check("a failed flush retries by itself, with no further change", async () => {
+    const store = mkStore();
+    const r = new ShardedRecord({ store, bot: "b", name: "retry", buckets: 2, retryMs: [20], log: quiet });
+    assert.ok(await r.open());
+    const restore = brokenWrites(store);
+    r.put("a", { n: 1 });
+    assert.strictEqual(await r.flush(), false);
+    restore();
+    for (let i = 0; i < 50 && r.dirty.size; i++) await new Promise((res) => setTimeout(res, 20));
+    assert.strictEqual(r.dirty.size, 0, "drained by the timer");
+    const t = new ShardedRecord({ store: mkStore(), bot: "b", name: "retry", buckets: 2, log: quiet });
+    await t.open();
+    assert.deepStrictEqual(t.get("a"), { n: 1 });
+  });
+
+  await check("the old stall-card marker is imported with the state file, or alone", async () => {
+    const file = join(dir, "bridge.json");
+    writeFileSync(`${file}.stall-card.json`, JSON.stringify({ issueId: "old-1" }));
+    const a = createPaperclipStore({ store: mkStore(), bot: "b", name: "stallmig", legacyFile: file, log: quiet });
+    assert.ok(await a.open());
+    assert.deepStrictEqual(a.getDoc("stall-card"), { issueId: "old-1" });
+  });
+
+  await check("an ask is announced only after its binding is in the record", async () => {
+    const store = mkStore();
+    const st = createOwnerAskStore({ store, bot: "b", name: "asks-order", log: quiet });
+    assert.ok(await st.open());
+    const reg = createOwnerAsks({ store: st });
+    const restore = brokenWrites(store);
+    let sends = 0;
+    const ask = { ownerCardId: "own-9", cardIdentifier: "T-9", issueId: "i-9", decision: "Approve?" };
+    const r1 = await announceAsk({ registry: reg, ask, channelId: "123456789012345678", send: async () => { sends++; return { id: "m" }; } });
+    assert.deepStrictEqual([r1.posted, sends], [false, 0]);
+    restore();
+    const r2 = await announceAsk({ registry: reg, ask, channelId: "123456789012345678", send: async () => { sends++; return { id: "m" }; } });
+    assert.deepStrictEqual([r2.posted, sends], [true, 1]);
+    const t = createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-order", log: quiet });
+    await t.open();
+    assert.strictEqual(createOwnerAsks({ store: t }).get(reg.keyOf(null, "own-9")).discordMessageId, "m");
+  });
+
+  await check("the poller launches nothing until its state is in the record", () => {
+    const src = readFileSync(join(__dirname, "..", "lib/paperclip.js"), "utf8");
+    const at = src.indexOf("const preflight = async");
+    const body = src.slice(at, src.indexOf("const run = async", at));
+    assert.ok(/await stateStore\.flush\(\)/.test(body) && /throw new CardMoved\(\)/.test(body.slice(body.indexOf("stateStore.flush"))));
   });
 
   await check("no source writes the bridge state, the bindings or the stall card to a local file", () => {

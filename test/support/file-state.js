@@ -15,6 +15,7 @@ const writeJson = (file, v) => { mkdirSync(dirname(file), { recursive: true }); 
 function fileStateStore(file) {
   return {
     read: () => readJson(file),
+    flush: async () => true,
     write: (raw) => writeJson(file, raw),
     getDoc: (name) => readJson(`${file}.${name}.json`),
     putDoc: (name, value) => { if (value == null) { try { require("fs").unlinkSync(`${file}.${name}.json`); } catch { /* none kept */ } } else writeJson(`${file}.${name}.json`, value); },
@@ -23,7 +24,7 @@ function fileStateStore(file) {
 
 function fileAskStore(file) {
   const asks = readJson(file)?.asks ?? {};
-  return { all: () => ({ ...asks }), put: (id, v) => { asks[id] = JSON.parse(JSON.stringify(v)); writeJson(file, { asks }); } };
+  return { flush: async () => true, all: () => ({ ...asks }), put: (id, v) => { asks[id] = JSON.parse(JSON.stringify(v)); writeJson(file, { asks }); } };
 }
 
 // Patched when a test first requires the module, never before: loading them here would

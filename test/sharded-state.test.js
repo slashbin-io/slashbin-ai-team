@@ -205,6 +205,26 @@ const bigState = (n) => {
     assert.strictEqual(c.read().seq, 4);
   });
 
+  await check("a restart between the imported entries and the empty-bucket marks resumes the import, never reads empty as done", async () => {
+    const file = join(dir, "mig2.json");
+    writeFileSync(file, JSON.stringify({ answeredAsks: ["z-a:1"], pendingReplies: { "z-a:2": "keep" }, seq: 9 }));
+    writeFileSync(`${file}.stall-card.json`, JSON.stringify({ issueId: "card-9" }));
+    const store = mkStore();
+    const set = store.set;
+    let writes = 0;
+    store.set = async (k, v, ver) => { if (!v.entries || Object.keys(v.entries).length) { writes++; return set.call(store, k, v, ver); } throw new Error("marks down"); };
+    assert.strictEqual(await createPaperclipStore({ store, bot: "b", name: "mig2", legacyFile: file, log: quiet }).open(), false);
+    assert.ok(writes > 0, "the contents went out first");
+    const again = createPaperclipStore({ store: mkStore(), bot: "b", name: "mig2", legacyFile: file, log: quiet });
+    assert.ok(await again.open());
+    writeFileSync(file, "{gone"); writeFileSync(`${file}.stall-card.json`, "{gone");
+    const last = createPaperclipStore({ store: mkStore(), bot: "b", name: "mig2", legacyFile: file, log: quiet });
+    assert.ok(await last.open());
+    assert.strictEqual(last.read().seq, 9);
+    assert.deepStrictEqual(last.read().pendingReplies, { "z-a:2": "keep" });
+    assert.deepStrictEqual(last.getDoc("stall-card"), { issueId: "card-9" });
+  });
+
   await check("a failed flush retries by itself, with no further change", async () => {
     const store = mkStore();
     const r = new ShardedRecord({ store, bot: "b", name: "retry", buckets: 2, retryMs: [20], log: quiet });

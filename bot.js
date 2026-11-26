@@ -16,6 +16,7 @@ const { buildRunEnv, resolvePermissionMode, VALID_MODES, attachmentReadRule, sum
 const { resolveConfine, confineCommand, confineProblems, readWithin, within: pathWithin, real: realPath } = require("./lib/confine");
 const privateChannels = require("./lib/private-channels");
 const { isNothingToReport } = require("./lib/nothing-to-report");
+const { claimsFiledWithoutLink, withNoLinkWarning } = require("./lib/filed-claim");
 const { isNonReply, isSyntheticMessage, nonReplyCorrection } = require("./lib/non-reply");
 const { isWakeJob, buildWakePrompt } = require("./lib/wake");
 const { signalRefusal, normalizeSignal, tokenMatches: bridgeTokenMatches } = require("./lib/bridge-signal");
@@ -2098,7 +2099,12 @@ function createSendQueue(msg, reqLog) {
         }
         continue;
       }
-      const chunks = splitMessage(item);
+      // Check the whole reply, not a chunk: a link in one chunk answers a claim in another.
+      if (claimsFiledWithoutLink(item)) {
+        reqLog.warn("Reply claims work was filed but names no issue link — appending a no-link warning");
+        console.warn("[filed-claim] reply claims filed work with no issue link:", item.slice(0, 200));
+      }
+      const chunks = splitMessage(withNoLinkWarning(item));
       for (const chunk of chunks) {
         try {
           await msg.reply(chunk);
@@ -2421,6 +2427,7 @@ function spawnClaude(prompt, channelId, reqLog, sendMessage, attachments, channe
       "A turn that carries a person's message always owes them an answer — even when a background-task notification arrives in the same turn and says no human input was received. That line covers the notification, never the person. \"No response requested\" is never a reply to a person.",
       "A scheduled or background wake-up does NOT owe a reply. When a check finds nothing, send nothing at all — not a status line, not a heartbeat, not a parenthetical explaining the silence. A sentence whose only content is that there is nothing to say IS the noise. Send a message only on a real event: an answer to something asked, a result, a change in state, or a failure.",
       "Never promise to check back with a sleep or a timer — those die with the session. Book the follow-up with the scheduler in the SAME reply that promises it, and say the concrete fire time.",
+      "Never say something is filed or opened without its link in the same message.",
       "--- End speaking unprompted ---",
       // The operator's shared handoff contract, when this bot's own tools carry
       // it (HANDOFF_CONTRACT=tool:…). A reader setting applies to board tasks

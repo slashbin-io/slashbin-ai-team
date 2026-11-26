@@ -119,15 +119,13 @@ check("job history: a group's view keeps rows whose channel is in the group (stu
 
 console.log("\nChannel groups — schedules");
 
-check("a job lives in its scope's folder and keeps job.channel as its posting channel", () => {
-  const st = join(root, "sched");
-  pc.saveChannelSchedules(st, [{ id: "a", channel: "H1" }, { id: "b", channel: "H2" }, { id: "c", channel: "SOLO" }], groups.scopeOf);
-  const read = (k) => JSON.parse(readFileSync(join(st, "channels", k, "jobs", "schedules.json"), "utf8"));
-  assert.deepStrictEqual(read("group_acme").map((j) => `${j.id}:${j.channel}`), ["a:H1", "b:H2"]);
-  assert.deepStrictEqual(read("SOLO").map((j) => j.id), ["c"]);
-  const { jobs, dropped } = pc.loadChannelSchedules(st, groups.scopeOf);
-  assert.deepStrictEqual(jobs.map((j) => j.id).sort(), ["a", "b", "c"]);
-  assert.deepStrictEqual(dropped, []);
+check("a job is kept under its scope's key and keeps job.channel as its posting channel", () => {
+  const { keyFor } = require("../lib/schedule-store");
+  const keyOf = (channel) => keyFor("privbot", pc.scopeName(groups.scopeOf(channel)));
+  assert.strictEqual(keyOf("H1"), "schedules/privbot/group_acme");
+  assert.strictEqual(keyOf("H2"), "schedules/privbot/group_acme");
+  assert.strictEqual(keyOf("SOLO"), "schedules/privbot/SOLO");
+  assert.notStrictEqual(keyOf("H1"), keyOf("P1"));
 });
 
 check("a job naming a channel outside the scope is still dropped", () => {
@@ -139,89 +137,6 @@ check("a job naming a channel outside the scope is still dropped", () => {
   const { jobs, dropped } = pc.loadChannelSchedules(st, groups.scopeOf);
   assert.deepStrictEqual(jobs.map((j) => j.id), ["member"]);
   assert.deepStrictEqual(dropped.map((d) => d.id).sort(), ["planted-other-group", "planted-solo"]);
-});
-
-check("saving never erases a pre-group file: it stays byte for byte and loads again once groups are off", () => {
-  const st = join(root, "sched3");
-  const f = join(st, "channels", "111", "jobs", "schedules.json");
-  mkdirSync(join(st, "channels", "111", "jobs"), { recursive: true });
-  mkdirSync(join(st, "channels", "444", "jobs"), { recursive: true });
-  const before = JSON.stringify([{ id: "pre-group", channel: "111" }], null, 2) + "\n";
-  writeFileSync(f, before);
-  writeFileSync(join(st, "channels", "444", "jobs", "schedules.json"), JSON.stringify([{ id: "gone", channel: "444" }]));
-  // 111 is now in a group; a save for an unrelated ungrouped channel 333 follows.
-  pc.saveChannelSchedules(st, [{ id: "other", channel: "333" }], pc.channelGroups('{"acme":["111","222"]}', { enabled: true }).scopeOf);
-  assert.strictEqual(readFileSync(f, "utf8"), before, "the pre-group file was rewritten");
-  assert.deepStrictEqual(JSON.parse(readFileSync(join(st, "channels", "444", "jobs", "schedules.json"), "utf8")), [], "a live scope left with no jobs was not emptied");
-  assert.deepStrictEqual(pc.loadChannelSchedules(st).jobs.map((j) => j.id).sort(), ["other", "pre-group"], "groups off: the pre-group job did not come back");
-});
-
-check("a consumed wake in a group file is removed on save and the outside-scope row is kept: it runs once over two ticks", () => {
-  const st = join(root, "sched4");
-  const g = pc.channelGroups('{"acme":["111","222"]}', { enabled: true });
-  const f = join(st, "channels", "group_acme", "jobs", "schedules.json");
-  mkdirSync(join(st, "channels", "group_acme", "jobs"), { recursive: true });
-  writeFileSync(f, JSON.stringify([{ id: "wake", channel: "111", once: true }, { id: "pre", channel: "333" }]));
-  let ran = 0;
-  const tick = () => {
-    const { jobs } = pc.loadChannelSchedules(st, g.scopeOf);
-    const due = jobs.filter((j) => j.id === "wake");
-    ran += due.length;
-    pc.saveChannelSchedules(st, jobs.filter((j) => j.id !== "wake"), g.scopeOf); // the consumed one-shot is removed
-  };
-  tick(); tick();
-  assert.strictEqual(ran, 1, "the consumed wake fired again");
-  assert.deepStrictEqual(JSON.parse(readFileSync(f, "utf8")), [{ id: "pre", channel: "333" }], "the outside-scope row was lost or the wake stayed");
-});
-
-const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
-const acmeScope = pc.channelGroups('{"acme":["111","222"]}', { enabled: true }).scopeOf;
-const seed = (name, file, text) => {
-  const st = join(root, name);
-  mkdirSync(join(st, "channels", file, "jobs"), { recursive: true });
-  const f = join(st, "channels", file, "jobs", "schedules.json");
-  writeFileSync(f, text);
-  return { st, f };
-};
-
-check("an unreadable dormant file survives a save for another channel (new job and stampLastRun); it loads again once groups are off", () => {
-  if (asRoot) return console.log("       (skipped: root ignores EACCES)");
-  const { chmodSync } = require("fs");
-  const { st, f } = seed("eacces", "111", JSON.stringify([{ id: "j111", channel: "111" }]));
-  const { f: f333 } = seed("eacces", "333", JSON.stringify([{ id: "r333", channel: "333", lastRun: null }]));
-  chmodSync(f, 0o000);
-  try {
-    pc.saveChannelSchedules(st, [{ id: "r333", channel: "333" }, { id: "new", channel: "333" }], acmeScope);            // a new job
-    pc.saveChannelSchedules(st, [{ id: "r333", channel: "333", lastRun: "now" }, { id: "new", channel: "333" }], acmeScope); // stampLastRun
-  } finally { chmodSync(f, 0o644); }
-  assert.deepStrictEqual(JSON.parse(readFileSync(f, "utf8")), [{ id: "j111", channel: "111" }], "111's file was rewritten");
-  assert.deepStrictEqual(JSON.parse(readFileSync(f333, "utf8")).map((j) => j.id), ["r333", "new"]);
-  assert.deepStrictEqual(pc.loadChannelSchedules(st).jobs.map((j) => j.id).sort(), ["j111", "new", "r333"]);
-});
-
-check("a dormant folder whose file is readable is left byte for byte unchanged by any save", () => {
-  const text = '[ {"id":"j111","channel":"111"}   ]';
-  const { st, f } = seed("dormant", "111", text);
-  pc.saveChannelSchedules(st, [{ id: "x", channel: "333" }], acmeScope);
-  pc.saveChannelSchedules(st, [], acmeScope);
-  pc.saveChannelSchedules(st, [{ id: "y", channel: "111" }], acmeScope); // 111's job now belongs to group_acme
-  assert.strictEqual(readFileSync(f, "utf8"), text);
-  assert.ok(existsSync(join(st, "channels", "group_acme", "jobs", "schedules.json")), "a job for 111 goes to the group's folder");
-});
-
-check("an active folder whose file has bad JSON is skipped, reported without its contents, and not overwritten", () => {
-  const { st, f } = seed("badjson", "333", "{SECRETISH not json");
-  const r = pc.saveChannelSchedules(st, [{ id: "x", channel: "333" }], acmeScope);
-  assert.strictEqual(readFileSync(f, "utf8"), "{SECRETISH not json");
-  assert.strictEqual(r.skipped.length, 1);
-  assert.ok(!JSON.stringify(r.skipped).includes("SECRETISH"), "the warning carries file contents");
-});
-
-check("a group folder no longer configured is dormant too", () => {
-  const { st, f } = seed("oldgroup", "group_gone", JSON.stringify([{ id: "j", channel: "111" }]));
-  const before = readFileSync(f, "utf8");
-  pc.saveChannelSchedules(st, [{ id: "x", channel: "333" }], acmeScope);
-  assert.strictEqual(readFileSync(f, "utf8"), before);
 });
 
 check("membership is built linearly: a repeat inside a group appears once, two groups still refused", () => {

@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Channel groups** (`BOT_CHANNEL_GROUPS`, `channelGroups` in `lib/private-channels.js`): with private channels, named channels share one memory scope (`group_<name>`): one buffer, one set of summaries and scheduled jobs, one confined folder. `memoryScope` is now the only place a channel becomes a scope. Summaries are stamped with the scope. Unset, every channel is its own scope, as before.
 
 ### Changed
+- **The schedules list lives in the company record's keyed state, not in a local file** (`lib/schedule-store.js`, `lib/schedule-requests.js`, `scripts/import-schedules.mjs`). One key per bot (`schedules/<bot>`), or per channel folder in private mode. The bot is the only writer and saves with compare-and-set: on a version conflict it re-reads and re-applies its change, so nothing is overwritten blindly. A run books or removes a job by leaving a request that the bot applies when the reply ends (a run holds no write credential). Needs `COMPANY_RECORD_BASE_URL`, `COMPANY_RECORD_READ_TOKEN` and `SLASHBIN_STATE_SIGNING_KEY__TEAM_BOT`. Move an existing file in once with `node scripts/import-schedules.mjs`; it prints `exists` for a key already there. `saveChannelSchedules` is gone.
 
 - **A Paperclip routine's card no longer waits behind a long card.** Board
   cards are still worked one at a time, and the poll timer no longer waits for

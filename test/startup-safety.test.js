@@ -160,7 +160,7 @@ check("a job may pin its own timezone", () => {
 
 check("the schedules path is published so a skill can create jobs", () => {
   // Published from the run's memory: the bot's file, or in private mode the channel's own.
-  assert.ok(/BOT_SCHEDULES_FILE: memory\.schedules,/.test(bot) && /schedules: SCHEDULES_FILE,/.test(bot),
+  assert.ok(/BOT_SCHEDULES_FILE: memory\.schedules,/.test(bot) && /schedules: SCHEDULES_VIEW,/.test(bot),
     "without this a scheduling skill would have to hardcode the path");
 });
 

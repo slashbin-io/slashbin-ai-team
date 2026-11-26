@@ -143,10 +143,10 @@ check("a tick never saves a stale copy of the schedules file", () => {
   // would silently delete the follow-up the run just scheduled.
   const fn = bot.slice(bot.indexOf("async function runScheduledJobs("));
   const body = fn.slice(0, fn.indexOf("\n}\n"));
-  assert.doesNotMatch(body, /saveSchedules\(/,
-    "the scheduler loop writes the file directly — it must go through the reload-first helpers");
-  assert.match(bot, /function removeScheduledJob\(job\) \{\s*saveSchedules\(loadSchedules\(\)/,
-    "removeScheduledJob must re-read the file before writing it");
+  assert.doesNotMatch(body, /changeSchedules\(|scheduleStore\.mutate\(/,
+    "the scheduler loop changes the list directly — it must go through the helpers that apply a change to the current list");
+  assert.match(bot, /function removeScheduledJob\(job\) \{\s*changeSchedules\(scheduleScopeOf\(job\.channel\), \(jobs\) => jobs\.filter/,
+    "removeScheduledJob must remove from the current list, never replace it with a stale copy");
 });
 
 const total = 14;

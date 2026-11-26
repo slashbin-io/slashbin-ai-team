@@ -203,9 +203,12 @@ daily.
 where the server is.
 
 <details>
-<summary>Writing <code>schedules.json</code> by hand</summary>
+<summary>The shape of a job</summary>
 
-Jobs live in `<BOT_STATE_DIR>/schedules.json`. You rarely need to touch it, but:
+Jobs live in the company record's keyed state (`schedules/<bot>`; in private-channel mode
+`schedules/<bot>/<channel folder>`), written only by the bot. You never edit them by hand: ask the
+bot, or run the schedule skill, which leaves a request the bot applies when the reply ends. A job
+looks like:
 
 ```json
 [

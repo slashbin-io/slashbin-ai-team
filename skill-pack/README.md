@@ -25,7 +25,7 @@ The harness publishes its **resolved** paths into the environment of every run:
 | `BOT_OUTBOX_DIR` | write here and it is attached to the reply |
 | `BOT_BUFFER_FILE` | rolling conversation buffer |
 | `BOT_SESSIONS_FILE` | per-channel session map |
-| `BOT_SCHEDULES_FILE` | the jobs themselves — write here to schedule one |
+| `BOT_SCHEDULES_FILE` | the jobs as the bot lays them out for this run (read-only view); `schedule.mjs` books by leaving a request beside it, and the bot applies it when the reply ends |
 | `BOT_CHANNEL_ID` | the channel this run is answering in |
 
 **Read those. Never name a file.** This pack exists because the per-repo copies of

@@ -184,10 +184,12 @@ function waitFor(cond, ms = 15000) {
   const readyFile = join(REPO, `.${name}.ready`);
   const surfacesFile = join(REPO, `.${name}.surfaces.json`);
   // A job aimed at a Discord channel, left from when the bot was on Discord.
-  writeFileSync(join(dir, "state", "schedules.json"), JSON.stringify([{ id: "standup", cron: "0 9 * * 1-5", prompt: "post the standup", channel: "123456789012345678" }]));
+  const { startReceiver } = require("./fake-receiver");
+  const record = await startReceiver();
+  record.seed(`schedules/${name}`, { jobs: [{ id: "standup", cron: "0 9 * * 1-5", prompt: "post the standup", channel: "123456789012345678" }] });
 
   const { code, out, child } = await runBot(
-    botEnv(dir, name, base + 2, { BOT_SURFACES: "paperclip", PAPERCLIP_URL: url, PAPERCLIP_API_KEY: "test-key" }), run,
+    botEnv(dir, name, base + 2, { BOT_SURFACES: "paperclip", PAPERCLIP_URL: url, PAPERCLIP_API_KEY: "test-key", BOT_SCHEDULE_CHECK_MS: "1000", ...record.env }), run,
     { until: (o) => /Paperclip board ready/.test(o) });
 
   await check("the process stays up and logs Discord off — Paperclip-only", async () => {
@@ -217,7 +219,8 @@ function waitFor(cond, ms = 15000) {
   await check("a scheduled job aimed at a Discord channel is refused at load, and kept in the file", () => {
     assert.match(out, /Scheduled job refused — it posts to a Discord channel and Discord is off/);
     assert.ok(!/Scheduled job loaded/.test(out), "the job was loaded as if it could run");
-    assert.strictEqual(JSON.parse(readFileSync(join(dir, "state", "schedules.json"), "utf8")).length, 1);
+    assert.strictEqual(record.jobs(`schedules/${name}`).length, 1, "the job left the record");
+    assert.ok(!existsSync(join(dir, "state", "schedules.json")), "a schedules file was written");
   });
 
   await check("doctor:fleet reads a board bot without a token as Paperclip-only, declared or not, and fails one with neither", async () => {
@@ -248,8 +251,18 @@ function waitFor(cond, ms = 15000) {
     assert.ok(!/Discord login failed|Bot online/.test(out), out);
   });
 
+  await check("a run's schedule request is applied to the record by the bot, then its file is deleted", async () => {
+    const reqDir = join(dir, "state", "schedule-requests");
+    mkdirSync(reqDir, { recursive: true });
+    const file = join(reqDir, "booked.json");
+    writeFileSync(file, JSON.stringify({ op: "add", job: { id: "booked", cron: "0 8 * * *", prompt: "p", channel: "123456789012345678" } }));
+    await waitFor(() => (record.jobs(`schedules/${name}`) || []).some((j) => j.id === "booked") && !existsSync(file), 15000);
+    assert.ok(!existsSync(join(dir, "state", "schedules.json")), "a schedules file was written");
+  });
+
   await stop(child);
   server.close();
+  await record.close();
 
   await check("shutdown removes the ready and surfaces files", () => {
     assert.ok(!existsSync(readyFile) && !existsSync(surfacesFile));

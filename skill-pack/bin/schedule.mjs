@@ -2,9 +2,13 @@
 /**
  * Create, list and remove this bot's scheduled jobs.
  *
- * The scheduler has always run jobs; nothing could CREATE one. `schedules.json`
- * had to be hand-written on the host, and the bot was never told the file exists,
- * so "remind me every morning at 7" was unserveable.
+ * The scheduler has always run jobs; nothing could CREATE one, so "remind me
+ * every morning at 7" was unserveable.
+ *
+ * The jobs themselves live in the company record, which a run cannot write. A run
+ * reads the list from the view the harness rebuilds before every run
+ * (BOT_SCHEDULES_FILE) and books or removes a job by leaving a request beside it,
+ * which the bot applies when the reply ends.
  *
  * Paths come from the environment the harness publishes. Nothing here names a file.
  *
@@ -21,7 +25,8 @@
  *   schedule.mjs remove <id>
  *   schedule.mjs history [id]
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { randomBytes } from "crypto";
 import { dirname, join } from "path";
 
 const SCHEDULES = process.env.BOT_SCHEDULES_FILE;
@@ -57,8 +62,29 @@ function destination() {
 }
 if (!SCHEDULES) die("BOT_SCHEDULES_FILE is not set — this run cannot schedule: it is a board task, or the harness is too old to support scheduling from chat.");
 
-const load = () => { try { return JSON.parse(readFileSync(SCHEDULES, "utf8")); } catch { return []; } };
-const save = (jobs) => { mkdirSync(dirname(SCHEDULES), { recursive: true }); writeFileSync(SCHEDULES, JSON.stringify(jobs, null, 2) + "\n"); };
+// The list as this run sees it: the harness's view, then this run's own requests not yet applied.
+const REQUESTS = join(dirname(SCHEDULES), "schedule-requests");
+const pending = () => {
+  try {
+    return readdirSync(REQUESTS).sort().filter((n) => n.endsWith(".json"))
+      .map((n) => { try { return JSON.parse(readFileSync(join(REQUESTS, n), "utf8")); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+};
+const load = () => {
+  let jobs = [];
+  try { const v = JSON.parse(readFileSync(SCHEDULES, "utf8")); if (Array.isArray(v)) jobs = v; } catch { /* no view yet: no jobs */ }
+  for (const r of pending()) {
+    if (r.op === "add" && r.job && !jobs.some((j) => j.id === r.job.id)) jobs.push(r.job);
+    else if (r.op === "remove") jobs = jobs.filter((j) => j.id !== r.id);
+  }
+  return jobs;
+};
+// A request, applied by the bot when this reply ends (it holds the only credential for the record).
+const submit = (request) => {
+  mkdirSync(REQUESTS, { recursive: true });
+  const name = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}.json`;
+  writeFileSync(join(REQUESTS, name), JSON.stringify(request) + "\n", { flag: "wx" });
+};
 
 const WEEKDAY = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 const DAY_NAME = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -191,13 +217,11 @@ if (cmd === "list") {
     createdAt: new Date().toISOString(),
     ...(flag("expires") ? { expires: flag("expires") } : {}),
   };
-  jobs.push(job);
-  save(jobs);
+  submit({ op: "add", job });
 
-  // Read back rather than trusting the write — a schedule nobody verified is a
-  // schedule nobody notices is wrong until it fails to fire.
+  // Read back what this run will see rather than trusting the write.
   const written = load().find((j) => j.id === id);
-  if (!written) die("Wrote the job but could not read it back — check permissions on the schedules file.");
+  if (!written) die("Filed the job but could not read it back — check that this run can write beside its schedules file.");
   const next = nextRun(written.cron, written.tz);
   console.log(`Scheduled **${id}** — ${describe(written.cron, written.tz)}`);
   console.log(`Next run: ${next ? next.toISOString().slice(0, 16).replace("T", " ") + " UTC" : "NEVER — the cron matches no time in the next 90 days"}`);
@@ -279,14 +303,11 @@ if (cmd === "list") {
     createdBy: flag("by") || "unknown",
     createdAt: new Date().toISOString(),
   };
-  jobs.push(job);
-  save(jobs);
+  submit({ op: "add", job });
 
-  // Read back rather than trusting the write — same reason as `add`. A follow-up
-  // nobody verified is one nobody notices is missing until the moment it was
-  // supposed to speak.
+  // Read back what this run will see — same reason as `add`.
   const written = load().find((j) => j.id === id);
-  if (!written) die("Wrote the wake-up but could not read it back — check permissions on the schedules file.");
+  if (!written) die("Filed the wake-up but could not read it back — check that this run can write beside its schedules file.");
   if (clampNote) console.log(clampNote);
   console.log(`Wake-up **${id}** set for ${written.runAt.slice(0, 16).replace("T", " ")} UTC — in ${humanDelay(Date.parse(written.runAt) - Date.now())}.`);
   console.log(written.attempt > 1 ? `Look ${written.attempt} of at most ${written.maxAttempts}.` : `Fires once. Limit ${written.maxAttempts} looks if it keeps re-arming.`);
@@ -303,8 +324,8 @@ if (cmd === "list") {
   const jobs = load();
   const rest = jobs.filter((j) => j.id !== id);
   if (rest.length === jobs.length) die(`No job called ${id}. Run \`list\` to see what exists.`);
-  save(rest);
-  console.log(`Removed **${id}**. ${rest.length} job(s) remain.`);
+  submit({ op: "remove", id });
+  console.log(`Removed **${id}** (recorded when this reply ends). ${rest.length} job(s) remain.`);
 } else if (cmd === "history") {
   const gone = HISTORY && join(dirname(HISTORY), "job-history.unavailable");
   if (gone && existsSync(gone)) die(`Run history is unavailable: ${readFileSync(gone, "utf8").trim()}`);

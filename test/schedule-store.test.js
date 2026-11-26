@@ -233,6 +233,45 @@ const ids = (jobs) => jobs.map((j) => j.id);
     assert.deepStrictEqual(r.requests, []);
   });
 
+  await check("cleanup deletes only inside the folder that was read: a swap for a link never reaches another file", () => {
+    const base = mkdtempSync(join(os.tmpdir(), "sched-del-"));
+    const reqDir = join(base, "schedule-requests"); mkdirSync(reqDir);
+    writeFileSync(join(reqDir, "a.json"), JSON.stringify({ op: "remove", id: "z" }));
+    const read = requests.readRequests(reqDir);
+    // a plain delete works
+    requests.deleteRequest(reqDir, "a.json", read.dirId);
+    assert.ok(!existsSync(join(reqDir, "a.json")));
+    // the run swaps the folder for a link to a folder holding a same-named file the bot must keep
+    writeFileSync(join(reqDir, "a.json"), JSON.stringify({ op: "remove", id: "z" }));
+    const read2 = requests.readRequests(reqDir);
+    const victimDir = join(base, "victim"); mkdirSync(victimDir);
+    writeFileSync(join(victimDir, "a.json"), "PROTECTED");
+    rmSync(reqDir, { recursive: true }); symlinkSync(victimDir, reqDir);
+    assert.throws(() => requests.deleteRequest(reqDir, "a.json", read2.dirId));
+    assert.strictEqual(readFileSync(join(victimDir, "a.json"), "utf8"), "PROTECTED");
+    // a swap for another real folder is refused too
+    rmSync(reqDir); mkdirSync(reqDir); writeFileSync(join(reqDir, "a.json"), "{}");
+    assert.throws(() => requests.deleteRequest(reqDir, "a.json", read2.dirId), /no longer the one/);
+    assert.ok(existsSync(join(reqDir, "a.json")));
+    assert.throws(() => requests.deleteRequest(reqDir, "../x.json", read2.dirId), /not a request name/);
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  await check("a remove request takes only the scope's own job; a foreign row with the same id stays", () => {
+    const own = (j) => j.channel === "111";
+    const list = [job("daily", { channel: "111" }), job("daily", { channel: "333" }), job("other", { channel: "111" })];
+    const after = requests.withoutOwn(list, "daily", own);
+    assert.deepStrictEqual(after.map((j) => `${j.id}:${j.channel}`), ["daily:333", "other:111"]);
+  });
+
+  await check("a private scope's run view is not the legacy file the import reads", () => {
+    const pc = require("../lib/private-channels");
+    const p = pc.channelPaths("/state", "111");
+    assert.notStrictEqual(p.schedulesView, p.schedules);
+    const bot = readFileSync(join(__dirname, "..", "bot.js"), "utf8");
+    assert.ok(/schedules: p\.schedulesView,/.test(bot) && !/schedules: p\.schedules,/.test(bot), "a run's view is the legacy file again");
+  });
+
   rmSync(root, { recursive: true, force: true });
   await check("the temporary folder is removed", () => assert.strictEqual(existsSync(root), false));
 

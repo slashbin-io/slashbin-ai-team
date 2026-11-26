@@ -670,7 +670,7 @@ function memoryFor(scope) {
   }
   const p = privateChannels.channelPaths(STATE_DIR, scope);
   return { buffer: p.buffer, summaries: p.summaries, attachments: p.attachments, sessions: p.sessions,
-    schedules: p.schedules, state: p.dir, dir: p.dir, home: p.home,
+    schedules: p.schedulesView, state: p.dir, dir: p.dir, home: p.home,
     // The channel folder is the bot's: a run reads it and writes only its jobs.
     // (Its home is bound separately, at the path the CLI expects.)
     read: [p.dir], write: [p.jobs] };
@@ -3173,38 +3173,41 @@ function changeSchedules(scope, op) {
  * Applied here after the run: each request becomes an operation on the scope's list, recorded
  * in the company record, and its file is deleted only once the record holds it.
  */
-const appliedScheduleRequests = new Map(); // file -> scope
+const appliedScheduleRequests = new Map(); // file -> { scope, dir, name, dirId }
 const refusedRequestsLogged = new Set();
 async function ingestScheduleRequests() {
   await ensureSchedulesLoaded();
   for (const scope of scheduleScopes()) {
     if (!scheduleStore.isLoaded(scope)) continue;
-    const view = PRIVATE_CHANNELS ? privateChannels.channelPaths(STATE_DIR, scope).schedules : SCHEDULES_VIEW;
-    const { requests, refused } = scheduleRequests.readRequests(scheduleRequests.requestsDirFor(view));
+    const view = PRIVATE_CHANNELS ? privateChannels.channelPaths(STATE_DIR, scope).schedulesView : SCHEDULES_VIEW;
+    const reqDir = scheduleRequests.requestsDirFor(view);
+    const { requests, refused, dirId } = scheduleRequests.readRequests(reqDir);
     for (const d of refused) {
       if (refusedRequestsLogged.has(d.file)) continue;
       refusedRequestsLogged.add(d.file);
       log.warn(d, "Schedule request ignored");
     }
-    for (const { file, request } of requests) {
+    for (const { file, name, request } of requests) {
       if (appliedScheduleRequests.has(file)) continue;
       if (request.op === "add") {
         const job = request.job;
         if (PRIVATE_CHANNELS && scheduleScopeOf(job.channel) !== scope) {
           log.warn({ scope, id: job.id }, "Schedule request ignored: it names a channel outside this scope");
-          appliedScheduleRequests.set(file, scope); // refused for good: its file goes with the rest
+          appliedScheduleRequests.set(file, { scope, dir: reqDir, name, dirId }); // refused for good: its file goes with the rest
           continue;
         }
         changeSchedules(scope, (jobs) => (jobs.some((j) => sameJob(j, job)) ? jobs : [...jobs, job]));
       } else {
-        changeSchedules(scope, (jobs) => jobs.filter((j) => j.id !== request.id));
+        // Only a job of this scope is the run's to remove: a foreign row sharing the id stays.
+        changeSchedules(scope, (jobs) => scheduleRequests.withoutOwn(jobs, request.id, (j) => !PRIVATE_CHANNELS || scheduleScopeOf(j.channel) === scope));
       }
-      appliedScheduleRequests.set(file, scope);
+      appliedScheduleRequests.set(file, { scope, dir: reqDir, name, dirId });
     }
     if (await scheduleStore.flush(scope)) {
-      for (const [file, sc] of [...appliedScheduleRequests]) {
-        if (sc !== scope) continue;
-        try { unlinkSync(file); } catch { /* already gone */ }
+      for (const [file, a] of [...appliedScheduleRequests]) {
+        if (a.scope !== scope) continue;
+        try { scheduleRequests.deleteRequest(a.dir, a.name, a.dirId); }
+        catch (e) { if (e.code !== "ENOENT") log.warn({ file, err: e.message }, "Schedule request file not deleted"); }
         appliedScheduleRequests.delete(file);
       }
     }

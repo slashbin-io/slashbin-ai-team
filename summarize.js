@@ -17,9 +17,10 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits, Partials } = require("discord.js");
 const { spawn } = require("child_process");
-const { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } = require("fs");
+const { readFileSync, existsSync, readdirSync } = require("fs");
 const { join } = require("path");
 const summarizeCore = require("./lib/summarize-core");
+const { createChannelState } = require("./lib/channel-state");
 const { channelGroups } = require("./lib/private-channels");
 const { summarizerArgs } = require("./lib/permission-mode");
 const { resolveRuntime } = require("./lib/runtime");
@@ -69,18 +70,10 @@ if (SUMMARIZE_CHANNELS.length === 0) {
 }
 
 // --- Checkpoint tracking ---
-function loadCheckpoints() {
-  try {
-    return JSON.parse(readFileSync(CHECKPOINT_FILE, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function saveCheckpoints(checkpoints) {
-  mkdirSync(HISTORY_DIR, { recursive: true });
-  writeFileSync(CHECKPOINT_FILE, JSON.stringify(checkpoints, null, 2));
-}
+// The checkpoints live in the company record, shared with the bot's own summarizer
+// (lib/channel-state.js); the old local file is read once to seed the record. This
+// script needs the same record settings as the bot (run it under the bot's secrets).
+const channelState = createChannelState({ bot: process.env.BOT_NAME || "bot", legacyCheckpointFile: CHECKPOINT_FILE });
 
 // --- Discord message fetching ---
 // Fetches all messages after a given snowflake ID, paginating as needed
@@ -191,7 +184,13 @@ async function main() {
   await client.login(DISCORD_TOKEN);
   console.log(`Logged in as ${client.user.tag}\n`);
 
-  const checkpoints = loadCheckpoints();
+  // A checkpoint that cannot be read is not an empty one: summarizing from the start would write every day twice.
+  if (!channelState.configured || !(await channelState.loadMarks())) {
+    console.error("The checkpoints could not be read from the company record (is it configured for this bot?). Nothing was summarized.");
+    client.destroy();
+    process.exit(1);
+  }
+  const checkpoints = channelState.marksNow();
   let totalMessages = 0;
   let totalSummaries = 0;
 
@@ -241,7 +240,7 @@ async function main() {
       checkpoints[channelId] = lastMessage.id;
 
       if (!DRY_RUN) {
-        saveCheckpoints(checkpoints);
+        if (!(await channelState.setMark(channelId, lastMessage.id))) console.error("  Checkpoint not saved to the company record; the next run will summarize this batch again.");
       }
 
       console.log(`  Checkpoint updated: ${lastMessage.id}\n`);

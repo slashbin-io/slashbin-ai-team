@@ -12,6 +12,7 @@ const { pipeline } = require("stream/promises");
 const { createWriteStream } = require("fs");
 const pino = require("pino");
 const summarizeCore = require("./lib/summarize-core");
+const { createChannelState } = require("./lib/channel-state");
 const { stallMessages } = require("./lib/stall-message");
 const { budgetContext, clampArgs, DEFAULT_CONTEXT_MAX_BYTES } = require("./lib/argv-budget");
 const { buildRunEnv, resolvePermissionMode, VALID_MODES, attachmentReadRule, summarizerArgs, PRIVATE_MEMORY_ENV, boardAccessKey, boardRunKind, privateMemoryDeny, boardArgs, boardSettings, boardCwdDenied, boardSecretFiles, boardHistoryDenied, resolveBoardPolicy, boardPolicyProblems, boardEngineeringRules, discordCredential, MIN_CREDENTIAL_CHARS, expand: expandPath } = require("./lib/permission-mode");
@@ -532,17 +533,11 @@ function channelPrompt(channelId, channelName) {
 // asked about a DM it would search everything, find nothing, and answer
 // confidently from a different conversation.
 const SUMMARIZE_SEEN = process.env.SUMMARIZE_SEEN_CHANNELS !== "false";
-const SEEN_CHANNELS_FILE = join(STATE_DIR, "seen-channels.json");
+const SEEN_CHANNELS_FILE = join(STATE_DIR, "seen-channels.json"); // the old local file: read once to seed the record
 
-function loadSeenChannels() {
-  try {
-    const raw = JSON.parse(readFileSync(SEEN_CHANNELS_FILE, "utf8"));
-    return new Set(Array.isArray(raw) ? raw : []);
-  } catch {
-    return new Set();
-  }
-}
-const seenChannels = loadSeenChannels();
+// The seen channels and the summarizer's checkpoints live in the company record
+// (lib/channel-state.js); the old local files are read once to seed it.
+let channelState = null; // created below, once BOT_NAME is known
 
 /**
  * Remember that this bot spoke here, so the summarizer can cover it later.
@@ -550,20 +545,14 @@ const seenChannels = loadSeenChannels();
  * conversation from yesterday would otherwise be invisible after a restart.
  */
 function recordSeenChannel(channelId) {
-  if (!SUMMARIZE_SEEN || seenChannels.has(channelId)) return;
-  seenChannels.add(channelId);
-  try {
-    mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(SEEN_CHANNELS_FILE, JSON.stringify([...seenChannels], null, 2));
-  } catch (err) {
-    log.warn({ err: err.message }, "Could not persist seen channels — this channel may not be summarized");
-  }
+  if (!SUMMARIZE_SEEN || !channelState || channelState.seenIds().has(channelId)) return;
+  channelState.recordSeen(channelId).catch((err) => log.warn({ err: err.message }, "Could not persist seen channels — this channel may not be summarized"));
 }
 
 /** Configured channels, plus everywhere the bot has actually spoken. */
 function channelsToSummarize() {
   const configured = new Set(SUMMARIZE_CHANNELS);
-  if (SUMMARIZE_SEEN) for (const id of seenChannels) configured.add(id);
+  if (SUMMARIZE_SEEN && channelState) for (const id of channelState.seenIds()) configured.add(id);
   return [...configured];
 }
 
@@ -622,6 +611,7 @@ const REACTION_FAIL_EMOJI = process.env.REACTION_FAIL_EMOJI || "❌";
 
 // --- Bot identity (must be before buffer/PID config) ---
 const BOT_NAME = process.env.BOT_NAME || "bot";
+channelState = createChannelState({ bot: BOT_NAME, log, legacySeenFile: SEEN_CHANNELS_FILE, legacyCheckpointFile: CHECKPOINT_FILE });
 
 // --- Conversation buffer config ---
 const BUFFER_FILE = join(STATE_DIR, "buffer.txt");
@@ -2951,19 +2941,6 @@ function summarizeBufferLines(lines) {
 
 // --- Background summarizer (hourly channel summaries to HISTORY_DIR) ---
 
-function loadCheckpoints() {
-  try {
-    return JSON.parse(readFileSync(CHECKPOINT_FILE, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function saveCheckpoints(checkpoints) {
-  mkdirSync(HISTORY_DIR, { recursive: true });
-  writeFileSync(CHECKPOINT_FILE, JSON.stringify(checkpoints, null, 2));
-}
-
 /**
  * Write one summary batch for a channel-day.
  *
@@ -3046,13 +3023,27 @@ let summarizing = false;
 
 async function runSummarizer() {
   if (summarizing) return;
-  if (channelsToSummarize().length === 0) return;
   summarizing = true;
+  try {
+    if (SUMMARIZE_SEEN) await channelState.loadSeen();
+    if (channelsToSummarize().length === 0) return;
+    await summarizeCycle();
+  } finally {
+    summarizing = false;
+  }
+}
+
+async function summarizeCycle() {
 
   const sumLog = log.child({ component: "summarizer" });
   sumLog.info({ configured: SUMMARIZE_CHANNELS.length, total: channelsToSummarize().length }, "Summarizer cycle starting");
 
-  const checkpoints = loadCheckpoints();
+  // A checkpoint that cannot be read is not an empty one: the cycle waits, so no channel is summarized twice.
+  if (!(await channelState.loadMarks())) {
+    sumLog.warn("Summarizer cycle skipped: the checkpoints could not be read from the company record");
+    return;
+  }
+  const checkpoints = channelState.marksNow();
   let totalMessages = 0;
   let totalSummaries = 0;
 
@@ -3088,14 +3079,13 @@ async function runSummarizer() {
       }
 
       checkpoints[channelId] = messages[messages.length - 1].id;
-      saveCheckpoints(checkpoints);
+      if (!(await channelState.setMark(channelId, checkpoints[channelId]))) sumLog.warn({ channelId }, "Checkpoint not saved yet — it stays queued");
     } catch (err) {
       sumLog.error({ channelId, err: err.message }, "Failed to process channel");
     }
   }
 
   sumLog.info({ totalMessages, totalSummaries }, "Summarizer cycle complete");
-  summarizing = false;
 }
 
 if (SUMMARIZE_INTERVAL_MS > 0 && !client) {

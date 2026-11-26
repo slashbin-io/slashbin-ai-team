@@ -225,7 +225,8 @@ check("seen channels survive a restart", () => {
   // invisible after a restart if that were the only source.
   const fn = /function recordSeenChannel\([\s\S]*?\n}/.exec(bot);
   assert.ok(fn, "recordSeenChannel not found");
-  assert.ok(/writeFileSync\(SEEN_CHANNELS_FILE/.test(fn[0]), "seen channels are not persisted");
+  assert.ok(/channelState\.recordSeen\(/.test(fn[0]), "seen channels are not persisted to the company record");
+  assert.ok(!/writeFileSync/.test(fn[0]), "seen channels must not go back to a local file");
   assert.ok(/join\(STATE_DIR, "seen-channels\.json"\)/.test(bot),
     "the record must live under the state root with the rest of the bot's memory");
 });

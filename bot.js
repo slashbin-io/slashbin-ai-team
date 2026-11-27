@@ -13,6 +13,7 @@ const { createWriteStream } = require("fs");
 const pino = require("pino");
 const summarizeCore = require("./lib/summarize-core");
 const { createChannelState } = require("./lib/channel-state");
+const { createPaperclipStore } = require("./lib/paperclip-state");
 const { stallMessages } = require("./lib/stall-message");
 const { budgetContext, clampArgs, DEFAULT_CONTEXT_MAX_BYTES } = require("./lib/argv-budget");
 const { buildRunEnv, resolvePermissionMode, VALID_MODES, attachmentReadRule, summarizerArgs, PRIVATE_MEMORY_ENV, boardAccessKey, boardRunKind, privateMemoryDeny, boardArgs, boardSettings, boardCwdDenied, boardSecretFiles, boardHistoryDenied, resolveBoardPolicy, boardPolicyProblems, boardEngineeringRules, discordCredential, MIN_CREDENTIAL_CHARS, expand: expandPath } = require("./lib/permission-mode");
@@ -22,7 +23,7 @@ const { isNothingToReport } = require("./lib/nothing-to-report");
 const { isNonReply, isSyntheticMessage, nonReplyCorrection } = require("./lib/non-reply");
 const { isWakeJob, buildWakePrompt } = require("./lib/wake");
 const { signalRefusal, normalizeSignal, tokenMatches: bridgeTokenMatches } = require("./lib/bridge-signal");
-const { createOwnerAsks, announceAsk, announceGrantAsks, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
+const { createOwnerAsks, createOwnerAskStore, announceAsk, announceGrantAsks, recoverUnsentAsks, answerAsk, routeReply, idsIn, replyContext, whichMessage } = require("./lib/owner-asks");
 const { parseRunnerRefusal, detectRefusal, DEFAULT_RULES: RUNNER_REFUSAL_DEFAULTS } = require("./lib/refusal");
 const { parseRoutineRunner, createRoutineRunner } = require("./lib/routine-runner");
 const { parseAlertConfig, isAlert, createAlertQueue } = require("./lib/alert-runner");
@@ -757,15 +758,50 @@ for (const note of SURFACES.notes) log.warn(note);
 const DISCORD_ON = SURFACES.discord;
 const PAPERCLIP_BOARDS = SURFACES.paperclip ? CONFIGURED_BOARDS : [];
 // Asks to a person, announced on Discord and answered there (lib/owner-asks.js).
-// The store is read whole or the feature is off: read as empty it would
-// announce every ask again. OWNER_RELAYS maps a board to the poller's relay.
+// The bindings live in the company record, sharded (lib/owner-asks.js createOwnerAskStore),
+// and are read whole or the feature is off: read as empty it would announce every ask
+// again. The old local file is read once to seed the record. Opened with the boards below.
+// OWNER_RELAYS maps a board to the poller's relay.
 let OWNER_ASKS = null;
 const OWNER_RELAYS = {};
-if (PAPERCLIP_BOARDS.length) {
-  try { OWNER_ASKS = createOwnerAsks({ file: join(STATE_DIR, "owner-asks.json") }); } catch (err) {
+// The bot's own messages in a channel from just before `fromMs` on, paged forward however many pages that takes.
+// A fetch that fails throws: the caller then sends nothing.
+const DISCORD_EPOCH = 1420070400000n;
+const botMessagesSince = async (channel, fromMs) => {
+  if (!Number.isFinite(fromMs)) throw new Error("the ask has no creation time");
+  let after = String((BigInt(Math.max(0, fromMs - 60_000)) - DISCORD_EPOCH) << 22n);
+  const mine = [];
+  for (;;) {
+    const page = await channel.messages.fetch({ limit: 100, after });
+    if (!page.size) return mine;
+    // Oldest first within the page (a page comes newest first), so the list is in creation order for the matcher.
+    for (const m of [...page.values()].sort((x, y) => (BigInt(x.id) < BigInt(y.id) ? -1 : 1))) if (m.author?.id === client.user?.id) mine.push({ id: m.id, content: m.content });
+    after = page.reduce((top, m) => (BigInt(m.id) > BigInt(top) ? m.id : top), after);
+  }
+};
+// Settled once at startup, before any reply is routed (see the two routeReply calls in the message handler).
+let ownerAsksRecovery = Promise.resolve();
+const openOwnerAsks = async () => {
+  try {
+    const store = createOwnerAskStore({ store: channelState.store, bot: BOT_NAME, legacyFile: join(STATE_DIR, "owner-asks.json"), log });
+    if (await store.open()) {
+      OWNER_ASKS = createOwnerAsks({ store });
+      ownerAsksRecovery = (async () => {
+        if (!client) return;
+        if (!client.isReady()) await new Promise((res) => client.once("ready", res));
+        const n = await recoverUnsentAsks({ registry: OWNER_ASKS, scan: async (channelId, fromMs) => {
+          const ch = await resolveBridgeChannel(channelId, { ownerAsk: true });
+          if (!ch) throw new Error("channel unreachable");
+          return botMessagesSince(ch, fromMs);
+        } });
+        if (n) log.info({ adopted: n }, "Owner asks sent before a restart recovered from the channel");
+      })().catch((err) => log.warn({ err: err.message }, "Owner-ask recovery did not finish"));
+    }
+    else log.error("Owner-asks state not readable from the company record — asks to a person are not announced on Discord until it is");
+  } catch (err) {
     log.error({ err: err.message }, "Owner-asks state unreadable — asks to a person are not announced on Discord until it is fixed");
   }
-}
+};
 const PAPERCLIP_EVENTS = eventsSetting(process.env.PAPERCLIP_EVENTS);
 if (PAPERCLIP_BOARDS.length && PAPERCLIP_EVENTS.problem) log.warn(PAPERCLIP_EVENTS.problem);
 if (!DISCORD_ON) log.info(discordOffReason(SURFACES));
@@ -1746,6 +1782,7 @@ client?.on("messageCreate", async (msg) => {
   // The one exception to "mention or monitored": the person an open ask was put
   // to, answering it in the channel it was announced in (a bare yes/no, or a
   // reply to the announcement). Nothing else in that channel is let in.
+  await ownerAsksRecovery;
   const isAskAnswer = !isDM && !msg.author.bot && OWNER_ASKS
     && routeReply({ registry: OWNER_ASKS, channelId: msg.channel.id, text: msg.content, referenceId: msg.reference?.messageId ?? null, userId: msg.author.id }).kind !== "none";
   if (!isDM && !isMentioned && !isMonitored && !isAskAnswer) return;
@@ -3760,7 +3797,8 @@ if (SURFACES.paperclipRequired && (PAPERCLIP_CWD_DENIED || BOARD_POLICY_PROBLEMS
   clearReady();
   process.exit(EXIT_CONFIG);
 }
-if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.length) {
+if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.length) (async () => {
+  await openOwnerAsks();
   if (PAPERCLIP_BOARDS.length) {
     const { execution, source, tools, allow, readPaths, writePaths, network } = BOARD_POLICY;
     // On Codex the tool names are not used: the run is the profile in lib/runtime/codex.js.
@@ -3799,10 +3837,19 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
       pLog.error({ board: board.id ?? null }, "PAPERCLIP_RESOLVE_OWN is on, but this board has no escalate action and no escalateTo — its board tasks are off");
       continue;
     }
+    // The bridge state lives in the company record, sharded by card; the old local file seeds it once.
+    const stateStore = createPaperclipStore({ store: channelState.store, bot: BOT_NAME, name: tag, legacyFile: join(STATE_DIR, `${tag}.json`), log: pLog });
+    let stateOpen = false;
+    try { stateOpen = await stateStore.open(); } catch (err) { pLog.error({ err: err.message }, "Paperclip state unreadable"); }
+    if (!stateOpen) {
+      // Stay off rather than forget what was answered. Discord is unaffected.
+      pLog.error("Paperclip state not readable from the company record — board tasks are off until it is");
+      continue;
+    }
     const poller = createPaperclipPoller({
       url: board.url,
       apiKey: board.apiKey,
-      stateFile: join(STATE_DIR, `${tag}.json`),
+      stateStore,
       log: pLog,
       resumeInterrupted: process.env.PAPERCLIP_RESUME_INTERRUPTED === "1",
       intake: BOARD_TRIGGERS.intake,
@@ -3859,6 +3906,7 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
         if (!channel) return false;
         const { binding, posted } = await announceAsk({ registry: OWNER_ASKS, ask, board: board.id ?? null, channelId,
           answerers,
+          scan: (_channelId, fromMs) => botMessagesSince(channel, fromMs),
           send: (content) => channel.send({ content: `${escalation.mention ? `${escalation.mention} ` : ""}${content}`, allowedMentions: { parse: ["users"] } }) });
         if (posted) pLog.info({ paperclipTask: ask.cardIdentifier, channelId, messageId: binding.discordMessageId }, "Paperclip ask to a person — announced on Discord");
         return Boolean(binding.discordMessageId);
@@ -3924,7 +3972,7 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
     });
     pLog.info({ url: board.url, promptChannel: promptChannel ?? null, events: eventsOn ? "on" : "off" }, "Paperclip connector on");
   }
-}
+})().catch((err) => log.error({ err: err.message }, "Paperclip boards failed to start"));
 
 // --- Process error handlers ---
 process.on("unhandledRejection", (reason) => {

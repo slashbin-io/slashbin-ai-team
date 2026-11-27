@@ -3916,7 +3916,10 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
       // make is said on Discord once, as one message that a reply of yes or no
       // answers (lib/owner-asks.js). The binding is kept in the state folder, so
       // a re-wake or a restart posts nothing twice.
-      onOwnerAsk: OWNER_ASKS ? async (ask) => {
+      onOwnerAsk: async (ask) => {
+        // Read at call time: the registry may open after this poller is built (a failed first open is retried).
+        // Until it does, nothing is announced and the poller tries again on its next scan.
+        if (!OWNER_ASKS) return false;
         const channelId = escalation.channel ?? promptChannel;
         // Who may answer: the person the board pings, else the one allowlisted user. Nobody else.
         const mentioned = idsIn(escalation.mention);
@@ -3930,10 +3933,11 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
           send: (content) => channel.send({ content: `${escalation.mention ? `${escalation.mention} ` : ""}${content}`, allowedMentions: { parse: ["users"] } }) });
         if (posted) pLog.info({ paperclipTask: ask.cardIdentifier, channelId, messageId: binding.discordMessageId }, "Paperclip ask to a person — announced on Discord");
         return Boolean(binding.discordMessageId);
-      } : null,
+      },
       // The operator's production-grant cards are his own, so no ask above reaches them: every open one is
       // said on Discord once, all of a poll's in one message (lib/owner-asks.js announceGrantAsks).
-      onGrantAsks: OWNER_ASKS ? async (cards) => {
+      onGrantAsks: async (cards) => {
+        if (!OWNER_ASKS) return false;
         const channelId = escalation.channel ?? promptChannel;
         const channel = await resolveBridgeChannel(channelId, { paperclipTask: cards[0]?.cardIdentifier, ownerAsk: true });
         if (!channel) return false;
@@ -3941,7 +3945,7 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
           send: (content) => channel.send({ content: `${escalation.mention ? `${escalation.mention} ` : ""}${content}`, allowedMentions: { parse: ["users"] } }) });
         if (ok) pLog.info({ cards: cards.map((c) => c.cardIdentifier), channelId }, "Production grant cards — announced on Discord");
         return ok;
-      } : null,
+      },
       // A seat the board stops starting runs for is said on Discord, once per
       // stretch: polls keep succeeding, so nothing else would (slashbin-ai-team#128).
       stallCard: process.env.PAPERCLIP_STALL_CARD === "1",

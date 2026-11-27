@@ -510,7 +510,7 @@ async function post(registry, n, id) {
   await check("section parser and wiring", () => {
     assert.strictEqual(sectionOf(ownerDescription, "Decision"), "Approve the rollout?");
     assert.strictEqual(sectionOf(ownerDescription, "Evidence"), "");
-    assert.match(bot, /onOwnerAsk: OWNER_ASKS/);
+    assert.match(bot, /onOwnerAsk: async \(ask\) =>/);
     assert.match(bot, /OWNER_RELAYS\[board\.id \?\? "default"\] = poller\.relayOwnerAnswer/);
   });
 
@@ -534,6 +534,16 @@ async function post(registry, n, id) {
     assert.ok(!/unlink|rename|rmSync|truncate|writeFileSync/.test(src));
     // the startup path awaits only the first attempt
     assert.match(bot, /await openOwnerAsks\(\);/);
+  });
+
+  await check("the pollers read the registry when they scan, so a later successful open turns announcements on", () => {
+    assert.match(bot, /onOwnerAsk: async \(ask\) => \{\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*if \(!OWNER_ASKS\) return false;/);
+    assert.match(bot, /onGrantAsks: async \(cards\) => \{\s*if \(!OWNER_ASKS\) return false;/);
+    assert.ok(!/onOwnerAsk: OWNER_ASKS \?/.test(bot) && !/onGrantAsks: OWNER_ASKS \?/.test(bot), "a callback fixed at construction");
+    // behaviour of that shape: a callback that reads the variable per call announces once it is set
+    let REG = null; const sent = [];
+    const cb = async (a) => { if (!REG) return false; sent.push(a); return true; };
+    return cb(1).then((first) => { assert.strictEqual(first, false); REG = {}; return cb(2); }).then((second) => { assert.strictEqual(second, true); assert.deepStrictEqual(sent, [2]); });
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

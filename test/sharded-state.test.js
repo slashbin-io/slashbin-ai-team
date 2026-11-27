@@ -327,6 +327,24 @@ const bigState = (n) => {
     assert.deepStrictEqual([reg.get(a.key).discordMessageId, reg.get(b.key).discordMessageId], [m1.id, m2.id]);
   });
 
+  await check("identical pre-ref asks are ordered with no comparison sort, in creation order", async () => {
+    const st = createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-radix", log: quiet });
+    assert.ok(await st.open());
+    const reg = createOwnerAsks({ store: st });
+    const t0 = Date.now();
+    const N = 200;
+    const made = [];
+    for (let i = N - 1; i >= 0; i--) made.push(reg.create({ key: reg.keyOf(null, `r${i}`), channelId: CH, cardIdentifier: "T", decision: "d", yesAction: "y", answerers: [], createdAt: new Date(t0 + i * 7).toISOString() }));
+    const text = askMessage(made[0], { withRef: false });
+    const history = Array.from({ length: N }, (_, i) => ({ id: flake(t0 + 100_000 + i), content: text }));
+    const realSort = Array.prototype.sort;
+    let sorts = 0;
+    Array.prototype.sort = function (...a) { sorts++; return realSort.apply(this, a); };
+    try { assert.strictEqual(await recoverUnsentAsks({ registry: reg, scan: async () => history }), N); } finally { Array.prototype.sort = realSort; }
+    assert.strictEqual(sorts, 0);
+    for (let i = 0; i < N; i++) assert.strictEqual(reg.get(reg.keyOf(null, `r${i}`)).discordMessageId, history[i].id);
+  });
+
   await check("a message already bound to another ask is never adopted", async () => {
     const st = createOwnerAskStore({ store: mkStore(), bot: "b", name: "asks-bound", log: quiet });
     assert.ok(await st.open());

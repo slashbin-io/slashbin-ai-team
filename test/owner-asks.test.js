@@ -510,8 +510,52 @@ async function post(registry, n, id) {
   await check("section parser and wiring", () => {
     assert.strictEqual(sectionOf(ownerDescription, "Decision"), "Approve the rollout?");
     assert.strictEqual(sectionOf(ownerDescription, "Evidence"), "");
-    assert.match(bot, /onOwnerAsk: OWNER_ASKS/);
+    assert.match(bot, /onOwnerAsk: async \(ask\) =>/);
     assert.match(bot, /OWNER_RELAYS\[board\.id \?\? "default"\] = poller\.relayOwnerAnswer/);
+  });
+
+  await check("a failed open of the owner-ask state is retried with bounded backoff, recovery runs once on success", () => {
+    const a = bot.indexOf("const OWNER_ASKS_RETRY_MS"), b = bot.indexOf("const PAPERCLIP_EVENTS =");
+    assert.ok(a > -1 && b > a, "tryOpenOwnerAsks not found in bot.js");
+    const src = bot.slice(a, b);
+    assert.match(src, /OWNER_ASKS_RETRY_MS = \[5_000, 15_000, 60_000\]/);
+    assert.match(src, /OWNER_ASKS_RETRY_REPEAT_MS = 300_000/);
+    assert.match(src, /setTimeout\(/);
+    // an open that returns false and one that throws both come back false, and both are retried
+    assert.match(src, /if \(!\(await store\.open\(\)\)\) return false;/);
+    assert.match(src, /catch \(err\) \{[\s\S]*?\n\s*return false;\n\s*\}/);
+    assert.match(src, /still not readable; retrying/);
+    assert.match(src, /announced on Discord again/);
+    // recovery is started only inside the successful open, once per success, and each retry builds a fresh store
+    assert.strictEqual((src.match(/recoverUnsentAsks\(/g) || []).length, 1);
+    assert.ok(src.indexOf("recoverUnsentAsks(") > src.indexOf("store.open()"));
+    assert.strictEqual((src.match(/createOwnerAskStore\(/g) || []).length, 1);
+    // the old file is never touched here
+    assert.ok(!/unlink|rename|rmSync|truncate|writeFileSync/.test(src));
+    // the startup path awaits only the first attempt
+    assert.match(bot, /await openOwnerAsks\(\);/);
+  });
+
+  await check("the pollers read the registry when they scan, so a later successful open turns announcements on, after recovery", async () => {
+    // after the guard, both wait for startup recovery, so recovery and an announcement never race into a duplicate send
+    for (const name of ["onOwnerAsk: async (ask)", "onGrantAsks: async (cards)"]) {
+      const at = bot.indexOf(name);
+      assert.ok(at > -1, `${name} not found`);
+      const body = bot.slice(at, at + 700);
+      assert.ok(body.indexOf("if (!OWNER_ASKS) return false;") > -1 && body.indexOf("await ownerAsksRecovery;") > body.indexOf("if (!OWNER_ASKS) return false;"), `${name} must read the registry, then wait for recovery`);
+    }
+    assert.ok(!/onOwnerAsk: OWNER_ASKS \?/.test(bot) && !/onGrantAsks: OWNER_ASKS \?/.test(bot), "a callback fixed at construction");
+    // behaviour of that shape: a callback that reads the variable per call announces once it is set
+    let REG = null, recovery = Promise.resolve(); const sent = [], order = [];
+    const cb = async (a) => { if (!REG) return false; await recovery; sent.push(a); order.push("sent"); return true; };
+    assert.strictEqual(await cb(1), false);
+    REG = {}; let done; recovery = new Promise((r) => { done = r; });
+    const pending = cb(2);
+    await new Promise((r) => setImmediate(r));
+    assert.deepStrictEqual(sent, [], "nothing is sent while recovery is still running");
+    order.push("recovered"); done();
+    assert.strictEqual(await pending, true);
+    assert.deepStrictEqual(order, ["recovered", "sent"]);
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

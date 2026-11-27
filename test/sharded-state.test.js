@@ -389,6 +389,38 @@ const bigState = (n) => {
     assert.deepStrictEqual([r2.posted, sends], [false, 0]);
   });
 
+  await check("a failed open never writes again: its queued retry cannot overwrite an answer saved after another open succeeded", async () => {
+    const legacy = () => ({ "ask-1": { state: "open" }, "ask-2": { state: "open" } });
+    const store = mkStore();
+    const restore = brokenWrites(store);
+    const a = new ShardedRecord({ store, bot: "b", name: "abandon", buckets: 2, legacy, retryMs: [60], log: quiet });
+    assert.strictEqual(await a.open(), false);
+    restore();
+    const b = new ShardedRecord({ store: mkStore(), bot: "b", name: "abandon", buckets: 2, legacy, log: quiet });
+    assert.ok(await b.open());
+    b.put("ask-1", { state: "answered", answer: "no" });
+    assert.ok(await b.flush());
+    await new Promise((r) => setTimeout(r, 400));
+    const c = new ShardedRecord({ store: mkStore(), bot: "b", name: "abandon", buckets: 2, legacy, log: quiet });
+    assert.ok(await c.open());
+    assert.deepStrictEqual(c.get("ask-1"), { state: "answered", answer: "no" });
+    assert.strictEqual(a.timer, null);
+    assert.ok(a.closed);
+  });
+
+  await check("an open that failed after a bucket was imported is closed too, and a later open on a new object finishes the import", async () => {
+    const legacy = () => ({ "ask-9": { state: "open" } });
+    const store = mkStore();
+    const set = store.set; let n = 0;
+    store.set = async (...a) => { if (n++ >= 1) throw new Error("record down"); return set.apply(store, a); };
+    const a = new ShardedRecord({ store, bot: "b", name: "abandon2", buckets: 2, legacy, retryMs: [40], log: quiet });
+    assert.strictEqual(await a.open(), false);
+    assert.ok(a.closed && a.timer === null);
+    const b = new ShardedRecord({ store: mkStore(), bot: "b", name: "abandon2", buckets: 2, legacy, log: quiet });
+    assert.ok(await b.open());
+    assert.deepStrictEqual(b.get("ask-9"), { state: "open" });
+  });
+
   await check("a failed import leaves the old file in place and the collection closed", async () => {
     const file = join(dir, "keep.json");
     writeFileSync(file, JSON.stringify({ seq: 5 }));

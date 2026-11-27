@@ -774,7 +774,8 @@ const botMessagesSince = async (channel, fromMs) => {
   for (;;) {
     const page = await channel.messages.fetch({ limit: 100, after });
     if (!page.size) return mine;
-    for (const m of page.values()) if (m.author?.id === client.user?.id) mine.push({ id: m.id, content: m.content });
+    // Oldest first within the page (a page comes newest first), so the list is in creation order for the matcher.
+    for (const m of [...page.values()].sort((x, y) => (BigInt(x.id) < BigInt(y.id) ? -1 : 1))) if (m.author?.id === client.user?.id) mine.push({ id: m.id, content: m.content });
     after = page.reduce((top, m) => (BigInt(m.id) > BigInt(top) ? m.id : top), after);
   }
 };

@@ -514,6 +514,28 @@ async function post(registry, n, id) {
     assert.match(bot, /OWNER_RELAYS\[board\.id \?\? "default"\] = poller\.relayOwnerAnswer/);
   });
 
+  await check("a failed open of the owner-ask state is retried with bounded backoff, recovery runs once on success", () => {
+    const a = bot.indexOf("const OWNER_ASKS_RETRY_MS"), b = bot.indexOf("const PAPERCLIP_EVENTS =");
+    assert.ok(a > -1 && b > a, "tryOpenOwnerAsks not found in bot.js");
+    const src = bot.slice(a, b);
+    assert.match(src, /OWNER_ASKS_RETRY_MS = \[5_000, 15_000, 60_000\]/);
+    assert.match(src, /OWNER_ASKS_RETRY_REPEAT_MS = 300_000/);
+    assert.match(src, /setTimeout\(/);
+    // an open that returns false and one that throws both come back false, and both are retried
+    assert.match(src, /if \(!\(await store\.open\(\)\)\) return false;/);
+    assert.match(src, /catch \(err\) \{[\s\S]*?\n\s*return false;\n\s*\}/);
+    assert.match(src, /still not readable; retrying/);
+    assert.match(src, /announced on Discord again/);
+    // recovery is started only inside the successful open, once per success, and each retry builds a fresh store
+    assert.strictEqual((src.match(/recoverUnsentAsks\(/g) || []).length, 1);
+    assert.ok(src.indexOf("recoverUnsentAsks(") > src.indexOf("store.open()"));
+    assert.strictEqual((src.match(/createOwnerAskStore\(/g) || []).length, 1);
+    // the old file is never touched here
+    assert.ok(!/unlink|rename|rmSync|truncate|writeFileSync/.test(src));
+    // the startup path awaits only the first attempt
+    assert.match(bot, /await openOwnerAsks\(\);/);
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

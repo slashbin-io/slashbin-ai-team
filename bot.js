@@ -781,26 +781,46 @@ const botMessagesSince = async (channel, fromMs) => {
 };
 // Settled once at startup, before any reply is routed (see the two routeReply calls in the message handler).
 let ownerAsksRecovery = Promise.resolve();
-const openOwnerAsks = async () => {
+// A failed open (a transient record read, a timeout) is retried with bounded backoff until it succeeds: without
+// it, asks to a person stay off Discord until the next restart. The first attempt is awaited at startup; the
+// retries run in the background, and each one builds a fresh store.
+const OWNER_ASKS_RETRY_MS = [5_000, 15_000, 60_000];
+const OWNER_ASKS_RETRY_REPEAT_MS = 300_000;
+const tryOpenOwnerAsks = async () => {
   try {
     const store = createOwnerAskStore({ store: channelState.store, bot: BOT_NAME, legacyFile: join(STATE_DIR, "owner-asks.json"), log });
-    if (await store.open()) {
-      OWNER_ASKS = createOwnerAsks({ store });
-      ownerAsksRecovery = (async () => {
-        if (!client) return;
-        if (!client.isReady()) await new Promise((res) => client.once("ready", res));
-        const n = await recoverUnsentAsks({ registry: OWNER_ASKS, scan: async (channelId, fromMs) => {
-          const ch = await resolveBridgeChannel(channelId, { ownerAsk: true });
-          if (!ch) throw new Error("channel unreachable");
-          return botMessagesSince(ch, fromMs);
-        } });
-        if (n) log.info({ adopted: n }, "Owner asks sent before a restart recovered from the channel");
-      })().catch((err) => log.warn({ err: err.message }, "Owner-ask recovery did not finish"));
-    }
-    else log.error("Owner-asks state not readable from the company record — asks to a person are not announced on Discord until it is");
+    if (!(await store.open())) return false;
+    OWNER_ASKS = createOwnerAsks({ store });
+    ownerAsksRecovery = (async () => {
+      if (!client) return;
+      if (!client.isReady()) await new Promise((res) => client.once("ready", res));
+      const n = await recoverUnsentAsks({ registry: OWNER_ASKS, scan: async (channelId, fromMs) => {
+        const ch = await resolveBridgeChannel(channelId, { ownerAsk: true });
+        if (!ch) throw new Error("channel unreachable");
+        return botMessagesSince(ch, fromMs);
+      } });
+      if (n) log.info({ adopted: n }, "Owner asks sent before a restart recovered from the channel");
+    })().catch((err) => log.warn({ err: err.message }, "Owner-ask recovery did not finish"));
+    return true;
   } catch (err) {
     log.error({ err: err.message }, "Owner-asks state unreadable — asks to a person are not announced on Discord until it is fixed");
+    return false;
   }
+};
+const openOwnerAsks = async () => {
+  if (await tryOpenOwnerAsks()) return;
+  log.error("Owner-asks state not readable from the company record — asks to a person are not announced on Discord until it is; retrying");
+  let attempt = 0;
+  const again = () => {
+    const delay = OWNER_ASKS_RETRY_MS[attempt] ?? OWNER_ASKS_RETRY_REPEAT_MS;
+    attempt++;
+    setTimeout(async () => {
+      if (await tryOpenOwnerAsks()) { log.info({ attempts: attempt + 1 }, "Owner-asks state opened; asks to a person are announced on Discord again"); return; }
+      log.warn({ attempt: attempt + 1, nextInMs: OWNER_ASKS_RETRY_MS[attempt] ?? OWNER_ASKS_RETRY_REPEAT_MS }, "Owner-asks state still not readable; retrying");
+      again();
+    }, delay).unref?.();
+  };
+  again();
 };
 const PAPERCLIP_EVENTS = eventsSetting(process.env.PAPERCLIP_EVENTS);
 if (PAPERCLIP_BOARDS.length && PAPERCLIP_EVENTS.problem) log.warn(PAPERCLIP_EVENTS.problem);

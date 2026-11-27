@@ -536,14 +536,26 @@ async function post(registry, n, id) {
     assert.match(bot, /await openOwnerAsks\(\);/);
   });
 
-  await check("the pollers read the registry when they scan, so a later successful open turns announcements on", () => {
-    assert.match(bot, /onOwnerAsk: async \(ask\) => \{\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*if \(!OWNER_ASKS\) return false;/);
-    assert.match(bot, /onGrantAsks: async \(cards\) => \{\s*if \(!OWNER_ASKS\) return false;/);
+  await check("the pollers read the registry when they scan, so a later successful open turns announcements on, after recovery", async () => {
+    // after the guard, both wait for startup recovery, so recovery and an announcement never race into a duplicate send
+    for (const name of ["onOwnerAsk: async (ask)", "onGrantAsks: async (cards)"]) {
+      const at = bot.indexOf(name);
+      assert.ok(at > -1, `${name} not found`);
+      const body = bot.slice(at, at + 700);
+      assert.ok(body.indexOf("if (!OWNER_ASKS) return false;") > -1 && body.indexOf("await ownerAsksRecovery;") > body.indexOf("if (!OWNER_ASKS) return false;"), `${name} must read the registry, then wait for recovery`);
+    }
     assert.ok(!/onOwnerAsk: OWNER_ASKS \?/.test(bot) && !/onGrantAsks: OWNER_ASKS \?/.test(bot), "a callback fixed at construction");
     // behaviour of that shape: a callback that reads the variable per call announces once it is set
-    let REG = null; const sent = [];
-    const cb = async (a) => { if (!REG) return false; sent.push(a); return true; };
-    return cb(1).then((first) => { assert.strictEqual(first, false); REG = {}; return cb(2); }).then((second) => { assert.strictEqual(second, true); assert.deepStrictEqual(sent, [2]); });
+    let REG = null, recovery = Promise.resolve(); const sent = [], order = [];
+    const cb = async (a) => { if (!REG) return false; await recovery; sent.push(a); order.push("sent"); return true; };
+    assert.strictEqual(await cb(1), false);
+    REG = {}; let done; recovery = new Promise((r) => { done = r; });
+    const pending = cb(2);
+    await new Promise((r) => setImmediate(r));
+    assert.deepStrictEqual(sent, [], "nothing is sent while recovery is still running");
+    order.push("recovered"); done();
+    assert.strictEqual(await pending, true);
+    assert.deepStrictEqual(order, ["recovered", "sent"]);
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

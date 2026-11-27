@@ -3920,6 +3920,8 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
         // Read at call time: the registry may open after this poller is built (a failed first open is retried).
         // Until it does, nothing is announced and the poller tries again on its next scan.
         if (!OWNER_ASKS) return false;
+        // Recovery adopts an original announcement before anything is announced, so the two never race into a duplicate send.
+        await ownerAsksRecovery;
         const channelId = escalation.channel ?? promptChannel;
         // Who may answer: the person the board pings, else the one allowlisted user. Nobody else.
         const mentioned = idsIn(escalation.mention);
@@ -3938,6 +3940,8 @@ if (PAPERCLIP_BOARDS.length && !PAPERCLIP_CWD_DENIED && !BOARD_POLICY_PROBLEMS.l
       // said on Discord once, all of a poll's in one message (lib/owner-asks.js announceGrantAsks).
       onGrantAsks: async (cards) => {
         if (!OWNER_ASKS) return false;
+        // Recovery adopts an original announcement before anything is announced, so the two never race into a duplicate send.
+        await ownerAsksRecovery;
         const channelId = escalation.channel ?? promptChannel;
         const channel = await resolveBridgeChannel(channelId, { paperclipTask: cards[0]?.cardIdentifier, ownerAsk: true });
         if (!channel) return false;
